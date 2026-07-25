@@ -103,22 +103,18 @@ class TelegramClientFactory:
 
         api_id, api_hash = self._get_api_credentials(tenant_config)
 
-        proxy = None
+        client_kwargs = {}
         env_proxy = settings.mt_proxy.strip()
         if env_proxy:
             parts = env_proxy.split(":")
             if len(parts) == 3:
                 try:
-                    proxy = (connection.ConnectionTcpMTProxyRandomizedIntermediate,
-                             parts[0], int(parts[1]), bytes.fromhex(parts[2]))
+                    proxy_secret = bytes.fromhex(parts[2])
+                    client_kwargs["proxy"] = (parts[0], int(parts[1]), proxy_secret)
+                    client_kwargs["connection"] = connection.ConnectionTcpMTProxyRandomizedIntermediate
                     logger.info("MTProxy configured: %s:%s", parts[0], parts[1])
                 except Exception as e:
                     logger.error("Failed to parse MT_PROXY '%s': %s", env_proxy, e)
-
-        client_kwargs = {}
-        if proxy:
-            client_kwargs["proxy"] = proxy
-            client_kwargs["connection"] = proxy[0]
 
         client = TelegramClient(secure_path, int(api_id), api_hash, **client_kwargs)
         self._clients[tenant_id] = client
