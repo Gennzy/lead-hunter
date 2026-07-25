@@ -10,7 +10,6 @@ from typing import Optional
 
 from telethon import TelegramClient, connection
 from sqlalchemy import select, update
-import socks
 
 from app.models import TelegramSession, Tenant, async_session
 from config import settings
@@ -22,8 +21,8 @@ _MAX_CONNECTIONS = settings.max_telegram_connections
 
 _CONNECT_SEMAPHORE = asyncio.Semaphore(_MAX_CONNECTIONS)
 
-# Session files directory — restricted permissions
-_SESSIONS_DIR = Path("telegram_sessions")
+# Session files directory — restricted permissions (absolute path)
+_SESSIONS_DIR = Path(__file__).resolve().parent.parent / "telegram_sessions"
 _SESSIONS_DIR.mkdir(exist_ok=True)
 
 # Rate limiting for authorization attempts
@@ -104,24 +103,11 @@ class TelegramClientFactory:
 
         api_id, api_hash = self._get_api_credentials(tenant_config)
 
-        client_kwargs = {}
-        if settings.socks5_proxy_host and settings.socks5_proxy_port:
-            client_kwargs["proxy"] = (
-                socks.SOCKS5,
-                settings.socks5_proxy_host,
-                int(settings.socks5_proxy_port),
-                True,
-                settings.socks5_proxy_user,
-                settings.socks5_proxy_pass,
-            )
-            logger.info("SOCKS5 proxy configured: %s:%s", settings.socks5_proxy_host, settings.socks5_proxy_port)
-
-        client = TelegramClient(secure_path, int(api_id), api_hash, **client_kwargs)
+        client = TelegramClient(secure_path, int(api_id), api_hash)
         self._clients[tenant_id] = client
 
-        # Restrict permissions on session file after creation
-        _restrict_session_file(secure_path + ".session")
-
+        # NOTE: Don't restrict session file here - SQLite creates it on connect()
+        # Restricting before SQLite finishes writing causes "readonly database" error
         return client
 
     def get_client(self, tenant_id: int) -> Optional[TelegramClient]:
@@ -221,11 +207,28 @@ class TelegramClientFactory:
             if client.is_connected():
                 await client.disconnect()
 
-            session_path = Path(_get_session_path(tenant_id) + ".session")
-            if session_path.exists():
-                session_path.unlink()
+            # Remove client from cache so create_client makes a fresh one
+            self._clients.pop(tenant_id, None)
 
+            # Delete ALL session-related files (session, journal, wal, shm)
+            prefix = _get_session_path(tenant_id)
+            for suffix in ['', '.session', '-journal', '-wal', '-shm']:
+                p = Path(prefix + suffix)
+                if p.exists():
+                    p.unlink()
+                    logger.info("Deleted: %s", p)
+
+            # Create fresh client
+            from app.config_manager import TenantConfig
+            tenant_config = await TenantConfig.create(tenant_id)
+            client = self.create_client(tenant_id, "", tenant_config)
+
+            logger.info("Connecting to Telegram (session: %s.session)", prefix)
             await client.connect()
+            logger.info("Connected to Telegram for tenant %d", tenant_id)
+
+            # Now restrict session file permissions after SQLite has finished writing
+            _restrict_session_file(prefix + ".session")
 
             from telethon.tl.functions.auth import SendCodeRequest
             from telethon.tl.types import CodeSettings
@@ -240,7 +243,7 @@ class TelegramClientFactory:
             self._phone_code_hashes[tenant_id] = result.phone_code_hash
             return {"status": "code_sent", "phone_code_hash": result.phone_code_hash}
         except Exception as e:
-            logger.error("Send code failed for tenant %d: %s", tenant_id, e)
+            logger.error("Send code failed for tenant %d: %s", tenant_id, e, exc_info=True)
             return {"error": str(e)}
 
     async def sign_in(self, tenant_id: int, phone: str, code: str,
