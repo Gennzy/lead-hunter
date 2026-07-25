@@ -204,9 +204,25 @@ class TelegramClientFactory:
             return {"error": "Client not found"}
 
         try:
-            if not client.is_connected():
-                await client.connect()
-            result = await client.send_code_request(phone)
+            if client.is_connected():
+                await client.disconnect()
+
+            session_path = Path(_get_session_path(tenant_id) + ".session")
+            if session_path.exists():
+                session_path.unlink()
+
+            await client.connect()
+
+            from telethon.tl.functions.auth import SendCodeRequest
+            from telethon.tl.types import CodeSettings
+
+            api_id, api_hash = self._get_api_credentials()
+            result = await client(SendCodeRequest(
+                phone_number=phone,
+                api_id=int(api_id),
+                api_hash=api_hash,
+                settings=CodeSettings()
+            ))
             self._phone_code_hashes[tenant_id] = result.phone_code_hash
             return {"status": "code_sent", "phone_code_hash": result.phone_code_hash}
         except Exception as e:
