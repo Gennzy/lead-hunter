@@ -109,8 +109,7 @@ class TelegramClientFactory:
             parts = env_proxy.split(":")
             if len(parts) == 3:
                 try:
-                    proxy_secret = bytes.fromhex(parts[2])
-                    client_kwargs["proxy"] = (parts[0], int(parts[1]), proxy_secret)
+                    client_kwargs["proxy"] = (parts[0], int(parts[1]), parts[2])
                     client_kwargs["connection"] = connection.ConnectionTcpMTProxyRandomizedIntermediate
                     logger.info("MTProxy configured: %s:%s", parts[0], parts[1])
                 except Exception as e:
