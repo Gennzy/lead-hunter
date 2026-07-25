@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Биллинг — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Биллинг и лимиты</h1>
+<p class="subtitle">Использование AI и лимиты тарифа</p>
+
+{% if success %}
+<div style="background:#f0fdf4;color:#16a34a;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #bbf7d0">{{ success }}</div>
+{% endif %}
+{% if error %}
+<div style="background:#fef2f2;color:#dc2626;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #fecaca">{{ error }}</div>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+    <div class="card">
+        <h3 style="color:var(--primary)">Сегодня</h3>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">AI запросов</span>
+                <div style="font-size:24px;font-weight:700">{{ ai_today }} <span style="font-size:13px;color:var(--text-secondary)">/ {{ max_ai_per_day }}</span></div>
+            </div>
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">Токенов</span>
+                <div style="font-size:24px;font-weight:700">{{ "{:,}".format(tokens_today) }} <span style="font-size:13px;color:var(--text-secondary)">/ {{ "{:,}".format(max_tokens_per_day) }}</span></div>
+            </div>
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">Стоимость</span>
+                <div style="font-size:24px;font-weight:700">${{ "%.2f"|format(cost_today) }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 style="color:var(--primary)">Этот месяц</h3>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">AI запросов</span>
+                <div style="font-size:24px;font-weight:700">{{ ai_month }}</div>
+            </div>
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">Токенов</span>
+                <div style="font-size:24px;font-weight:700">{{ "{:,}".format(tokens_month) }}</div>
+            </div>
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">Стоимость</span>
+                <div style="font-size:24px;font-weight:700">${{ "%.2f"|format(cost_month) }} <span style="font-size:13px;color:var(--text-secondary)">/ ${{ "%.2f"|format(max_cost_per_month) }}</span></div>
+            </div>
+            <div>
+                <span style="color:var(--text-secondary);font-size:12px">Лидов создано</span>
+                <div style="font-size:24px;font-weight:700">{{ leads_month }} <span style="font-size:13px;color:var(--text-secondary)">/ {{ max_leads_per_month }}</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Лимиты тарифа</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Настройте лимиты использования для вашего тенанта</p>
+
+    <form method="post" action="/settings/billing">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+                <label for="max_ai_requests_per_day">AI запросов в день</label>
+                <input type="number" id="max_ai_requests_per_day" name="max_ai_requests_per_day" value="{{ max_ai_per_day }}" min="1" max="10000">
+            </div>
+
+            <div class="form-group">
+                <label for="max_tokens_per_day">Токенов в день</label>
+                <input type="number" id="max_tokens_per_day" name="max_tokens_per_day" value="{{ max_tokens_per_day }}" min="1000" max="10000000">
+            </div>
+
+            <div class="form-group">
+                <label for="max_cost_per_month_usd">Лимит стоимости в месяц ($)</label>
+                <input type="number" id="max_cost_per_month_usd" name="max_cost_per_month_usd" value="{{ max_cost_per_month }}" min="0" max="10000" step="0.01">
+            </div>
+
+            <div class="form-group">
+                <label for="max_leads_per_month">Лидов в месяц</label>
+                <input type="number" id="max_leads_per_month" name="max_leads_per_month" value="{{ max_leads_per_month }}" min="1" max="100000">
+            </div>
+        </div>
+
+        <div class="form-group" style="margin-top:10px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" name="ai_enabled" value="true" {% if ai_enabled %}checked{% endif %} style="width:18px;height:18px">
+                <span>AI-анализ включён</span>
+            </label>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Если выключен — используется только анализ по ключевым словам (бесплатно)</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="margin-top:10px">Сохранить лимиты</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Информация</h3>
+    <div style="font-size:13px;color:var(--text-secondary);line-height:1.8">
+        <p><strong>При достижении лимита:</strong></p>
+        <ul style="margin:8px 0 8px 20px">
+            <li>AI-запросов/токенов — анализ переключается на ключевые слова (бесплатно)</li>
+            <li>Стоимости — AI-анализ отключается до следующего месяца</li>
+            <li>Лидов — новые лиды не создаются до следующего месяца</li>
+        </ul>
+        <p style="margin-top:10px"><strong>Стоимость AI:</strong> ~$0.002 за 1000 токенов (gpt-4o-mini)</p>
+    </div>
+</div>
+{% endblock %}

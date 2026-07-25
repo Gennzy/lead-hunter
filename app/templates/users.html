@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Сотрудники — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Сотрудники</h1>
+    <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Добавить</button>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="modal-section modal-reason" style="margin-bottom:16px">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Логин</th>
+                <th>Имя</th>
+                <th>Роль</th>
+                <th>Лидов</th>
+                <th>Статус</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td><code>{{ u.username }}</code></td>
+                <td>{{ u.full_name or '—' }}</td>
+                <td>
+                    {% if u.role == 'super_admin' %}
+                    <span class="badge badge-danger">Супер-админ</span>
+                    {% elif u.role == 'admin' %}
+                    <span class="badge badge-primary">Админ</span>
+                    {% elif u.role == 'manager' %}
+                    <span class="badge badge-success">Менеджер</span>
+                    {% else %}
+                    <span class="badge badge-low">Наблюдатель</span>
+                    {% endif %}
+                </td>
+                <td>{{ lead_counts.get(u.id, 0) }}</td>
+                <td>
+                    {% if u.is_active %}
+                    <span class="badge badge-success">Активен</span>
+                    {% else %}
+                    <span class="badge badge-low">Заблокирован</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.id != user.id %}
+                    {% if user.role == 'super_admin' or (user.role == 'admin' and u.role != 'super_admin') %}
+                    <form method="post" action="/users/{{ u.id }}/role" style="display:inline;margin-bottom:4px">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <select name="new_role" onchange="this.form.submit()" style="font-size:11px;padding:3px 6px">
+                            {% if user.role == 'super_admin' %}
+                            <option value="super_admin" {% if u.role == 'super_admin' %}selected{% endif %}>Супер-админ</option>
+                            {% endif %}
+                            <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>Админ</option>
+                            <option value="manager" {% if u.role == 'manager' %}selected{% endif %}>Менеджер</option>
+                            <option value="viewer" {% if u.role == 'viewer' %}selected{% endif %}>Наблюдатель</option>
+                        </select>
+                    </form>
+                    {% endif %}
+                    <form method="post" action="/users/{{ u.id }}/toggle" style="display:inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-sm {{ 'btn-danger' if u.is_active else 'btn-success' }}">
+                            {{ 'Заблокировать' if u.is_active else 'Активировать' }}
+                        </button>
+                    </form>
+                    <button onclick="openReset({{ u.id }})" class="btn btn-sm btn-outline">Сброс пароля</button>
+                    {% else %}
+                    <span style="color:var(--text-muted);font-size:12px">Вы</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div id="addModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:420px">
+        <div class="modal-header">
+            <h3>Новый сотрудник</h3>
+            <button class="modal-close" onclick="document.getElementById('addModal').style.display='none'">&times;</button>
+        </div>
+        <form method="post" action="/users/add" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group"><label>Логин *</label><input type="text" name="username" required></div>
+            <div class="form-group"><label>Пароль *</label><input type="password" name="password" required></div>
+            <div class="form-group"><label>Полное имя</label><input type="text" name="full_name"></div>
+            <div class="form-group">
+                <label>Роль</label>
+                <select name="role">
+                    <option value="viewer">Наблюдатель</option>
+                    <option value="manager">Менеджер</option>
+                    <option value="admin">Админ</option>
+                    {% if user.role == 'super_admin' %}
+                    <option value="super_admin">Супер-админ</option>
+                    {% endif %}
+                </select>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('addModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Добавить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="resetModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:380px">
+        <div class="modal-header">
+            <h3>Сброс пароля</h3>
+            <button class="modal-close" onclick="document.getElementById('resetModal').style.display='none'">&times;</button>
+        </div>
+        <form id="resetForm" method="post" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group"><label>Новый пароль</label><input type="password" name="new_password" required></div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('resetModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openReset(uid){document.getElementById('resetForm').action='/users/'+uid+'/reset-password';document.getElementById('resetModal').style.display='flex'}
+</script>
+{% endblock %}

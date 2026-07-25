@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Команда — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Команда</h1>
+<p class="subtitle">Управление сотрудниками и статистика</p>
+
+<div class="team-summary">
+    <div class="team-summary-card">
+        <div class="team-summary-number" style="color:var(--primary)">{{ team_data|length }}</div>
+        <div class="team-summary-label">Сотрудников</div>
+    </div>
+    <div class="team-summary-card">
+        <div class="team-summary-number" style="color:var(--primary)">{{ total_team_leads }}</div>
+        <div class="team-summary-label">Всего лидов</div>
+    </div>
+    <div class="team-summary-card">
+        <div class="team-summary-number" style="color:var(--success)">{{ total_deals }}</div>
+        <div class="team-summary-label">Сделок</div>
+    </div>
+</div>
+
+{% for d in team_data %}
+<div class="team-member">
+    <div class="team-member-header">
+        <div class="team-member-info">
+            <div class="team-member-avatar">{{ (d.user.full_name or d.user.username)[0]|upper }}</div>
+            <div>
+                <div class="team-member-name">{{ d.user.full_name or d.user.username }}</div>
+                <div class="team-member-meta">
+                    @{{ d.user.username }}
+                    {% if d.user.role == 'super_admin' %}
+                    <span class="badge badge-danger" style="font-size:10px">Супер-админ</span>
+                    {% elif d.user.role == 'admin' %}
+                    <span class="badge badge-primary" style="font-size:10px">Админ</span>
+                    {% elif d.user.role == 'manager' %}
+                    <span class="badge badge-success" style="font-size:10px">Менеджер</span>
+                    {% else %}
+                    <span class="badge badge-low" style="font-size:10px">Наблюдатель</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="team-member-stats">
+            <div class="team-stat">
+                <div class="team-stat-value">{{ d.leads_total }}</div>
+                <div class="team-stat-label">лидов</div>
+            </div>
+            <div class="team-stat">
+                <div class="team-stat-value" style="color:var(--success)">{{ d.deals }}</div>
+                <div class="team-stat-label">сделок</div>
+            </div>
+            <div class="team-stat">
+                <div class="team-stat-value" style="color:var(--primary)">{{ d.avg_score }}</div>
+                <div class="team-stat-label">avg score</div>
+            </div>
+            <div class="team-stat">
+                <div class="team-stat-value" style="color:var(--danger)">{{ d.high_leads }}</div>
+                <div class="team-stat-label">горячих</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="team-member-tags">
+        {% if d.new_leads > 0 %}
+        <a href="/leads?status=new" class="team-tag team-tag-new">Новые: {{ d.new_leads }}</a>
+        {% endif %}
+        {% if d.contacted > 0 %}
+        <a href="/leads?status=contacted" class="team-tag team-tag-contact">Контакт: {{ d.contacted }}</a>
+        {% endif %}
+        {% if d.interested > 0 %}
+        <a href="/leads?status=interested" class="team-tag team-tag-interested">Интерес: {{ d.interested }}</a>
+        {% endif %}
+        {% if d.deals > 0 %}
+        <a href="/leads?status=deal" class="team-tag team-tag-deal">Сделки: {{ d.deals }}</a>
+        {% endif %}
+    </div>
+
+    <div class="team-member-footer">
+        {% if d.last_lead %}Последний лид: {{ d.last_lead.strftime('%d.%m.%Y %H:%M') }}{% else %}Лидов пока нет{% endif %}
+    </div>
+</div>
+{% endfor %}
+
+{% if not team_data %}
+<div class="card empty-state">Нет сотрудников</div>
+{% endif %}
+{% endblock %}

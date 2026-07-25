@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}Лид #{{ lead.id }} — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <a href="/leads" style="color:var(--primary);font-size:13.5px;font-weight:500">← Назад к списку</a>
+    <div style="display:flex;gap:6px">
+        {% if prev_id %}<a href="/leads/{{ prev_id }}" class="btn btn-secondary btn-sm">← Пред.</a>{% endif %}
+        {% if next_id %}<a href="/leads/{{ next_id }}" class="btn btn-secondary btn-sm">След. →</a>{% endif %}
+    </div>
+</div>
+
+<div class="detail-layout">
+    <div>
+        <div class="card">
+            <h2>Сообщение</h2>
+            {% if lead.reply_to_text %}
+            <div style="background:#faf6f1;border-left:3px solid #d4b896;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;color:#57534e">
+                <div style="font-size:11px;color:#a8a29e;margin-bottom:4px">Ответ на:</div>
+                {{ lead.reply_to_text }}
+            </div>
+            {% endif %}
+            <div class="modal-msg">{{ lead.message_text }}</div>
+            {% if lead.reason %}
+            <div class="modal-section modal-reason"><strong>Причина:</strong> {{ lead.reason }}</div>
+            {% endif %}
+            {% if lead.recommended_message %}
+            <div class="modal-section modal-rec">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                    <strong style="color:var(--success)">Рекомендуемое сообщение:</strong>
+                    <button onclick="navigator.clipboard.writeText(this.closest('.modal-rec').querySelector('.rec-text').textContent.trim()).then(function(){var b=event.target;b.textContent='Скопировано!';setTimeout(function(){b.textContent='Копировать'},1500)})" class="btn btn-sm btn-outline" style="font-size:11px;padding:3px 10px">Копировать</button>
+                </div>
+                <div class="rec-text" style="line-height:1.6">{{ lead.recommended_message }}</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <h2>Заметки</h2>
+            {% for h in history %}
+                {% if h.action == 'note' %}
+                <div class="history-item">
+                    <div class="history-dot" style="background:var(--info)"></div>
+                    <div>
+                        <div class="history-text">{{ h.note }}</div>
+                        <div class="history-time">{{ h.user.full_name or h.user.username if h.user else '?' }} · {{ h.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+            {% if user and user.role != 'viewer' %}
+            <form method="post" action="/leads/{{ lead.id }}/note" style="margin-top:14px">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-group">
+                    <textarea name="note_text" rows="2" placeholder="Добавить заметку..." style="width:100%;resize:vertical"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary btn-sm">Добавить заметку</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <div>
+        <div class="card">
+            <h2>Информация</h2>
+            <dl class="modal-meta">
+                <dt>ID</dt><dd>#{{ lead.id }}</dd>
+                <dt>Дата</dt><dd>{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}</dd>
+                <dt>Чат</dt><dd>{{ lead.chat_title }}</dd>
+                <dt>Пользователь</dt>
+                <dd>
+                    {% if lead.profile_url() and lead.profile_url() != '#' %}
+                    <a href="{{ lead.profile_url() }}" target="_blank" style="color:var(--primary)">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</a>
+                    {% else %}
+                    {{ lead.first_name or '' }} {{ lead.last_name or '' }}
+                    {% endif %}
+                    {% if lead.username %}
+                    <div style="color:var(--text-muted);font-size:12.5px">@{{ lead.username }}</div>
+                    {% elif lead.user_id %}
+                    <div style="color:var(--text-muted);font-size:12.5px">ID: {{ lead.user_id }}</div>
+                    {% endif %}
+                </dd>
+                <dt>Score</dt>
+                <dd><span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span></dd>
+                <dt>Срочность</dt>
+                <dd>
+                    {% if lead.urgency == 'high' %}🔥 Высокая
+                    {% elif lead.urgency == 'medium' %}⚡ Средняя
+                    {% else %}💤 Низкая{% endif %}
+                </dd>
+                <dt>Статус</dt>
+                <dd>
+                    {% if user and user.role != 'viewer' %}
+                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <select name="status" onchange="this.form.submit()" style="width:100%">
+                            <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
+                            <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контактировали</option>
+                            <option value="missed_call" {% if lead.status == 'missed_call' %}selected{% endif %}>Недозвон</option>
+                            <option value="in_progress" {% if lead.status == 'in_progress' %}selected{% endif %}>В работе</option>
+                            <option value="interested" {% if lead.status == 'interested' %}selected{% endif %}>Заинтересован</option>
+                            <option value="not_interested" {% if lead.status == 'not_interested' %}selected{% endif %}>Не интересует</option>
+                            <option value="deal" {% if lead.status == 'deal' %}selected{% endif %}>Сделка</option>
+                            <option value="archive" {% if lead.status == 'archive' %}selected{% endif %}>Архив</option>
+                        </select>
+                    </form>
+                    {% else %}
+                    {{ lead.status }}
+                    {% endif %}
+                </dd>
+                {% if assignee %}
+                <dt>Ответственный</dt><dd>{{ assignee.full_name or assignee.username }}</dd>
+                {% endif %}
+            </dl>
+        </div>
+
+        {% if lead.profile_url() and lead.profile_url() != '#' %}
+        <a href="{{ lead.profile_url() }}" target="_blank" class="btn btn-primary" style="width:100%;margin-bottom:8px;text-decoration:none">Написать в Telegram</a>
+        {% endif %}
+
+        {% if not lead.username and lead.user_id %}
+        <button onclick="navigator.clipboard.writeText('{{ lead.user_id }}').then(function(){alert('ID скопирован')})" class="btn btn-secondary" style="width:100%;margin-bottom:8px">Скопировать ID</button>
+        {% endif %}
+
+        {% if user and user.role != 'viewer' %}
+        {% if user and user.role != 'viewer' %}
+        <div class="card" style="margin-top:0;padding:14px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Быстрые действия</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="status" value="contacted">
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'contacted' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">📞 Связался</button>
+                </form>
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="status" value="missed_call">
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'missed_call' %}btn-warning{% else %}btn-outline{% endif %}" style="font-size:11px">📱 Недозвон</button>
+                </form>
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="status" value="in_progress">
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'in_progress' %}btn-info{% else %}btn-outline{% endif %}" style="font-size:11px">⏳ В работе</button>
+                </form>
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="status" value="deal">
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'deal' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">💰 Сделка</button>
+                </form>
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="status" value="not_interested">
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'not_interested' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">✕ Не актуально</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="card" style="margin-top:0;padding:14px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Оценить лид</div>
+            {% if lead.feedback %}
+            <div style="font-size:12.5px;color:{% if lead.feedback == 'useful' %}var(--success){% else %}var(--danger){% endif %};margin-bottom:6px">
+                {% if lead.feedback == 'useful' %}✓ Полезный{% else %}✗ Не полезный{% endif %}
+                {% if lead.feedback_reason %} · {{ lead.feedback_reason }}{% endif %}
+            </div>
+            {% endif %}
+            <form method="post" action="/leads/{{ lead.id }}/feedback" style="display:flex;gap:6px;flex-wrap:wrap">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" name="feedback" value="useful" class="btn btn-sm {% if lead.feedback == 'useful' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">✓ Полезный</button>
+                <button type="submit" name="feedback" value="not_useful" class="btn btn-sm {% if lead.feedback == 'not_useful' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">✗ Не полезный</button>
+                {% if lead.feedback != 'useful' %}
+                <select name="reason" onchange="this.form.submit()" style="font-size:11px;padding:4px 8px;border:1px solid #d6d3d1;border-radius:6px">
+                    <option value="">Причина...</option>
+                    <option value="spam" {% if lead.feedback_reason == 'spam' %}selected{% endif %}>Спам</option>
+                    <option value="off_topic" {% if lead.feedback_reason == 'off_topic' %}selected{% endif %}>Не по теме</option>
+                    <option value="duplicate" {% if lead.feedback_reason == 'duplicate' %}selected{% endif %}>Дубликат</option>
+                    <option value="found_crew" {% if lead.feedback_reason == 'found_crew' %}selected{% endif %}>Клиент нашёл бригаду</option>
+                    <option value="not_lead" {% if lead.feedback_reason == 'not_lead' %}selected{% endif %}>Не лид</option>
+                </select>
+                {% endif %}
+            </form>
+        </div>
+        {% endif %}
+
+        {% if user and user.role in ('admin', 'super_admin') %}
+        <form method="post" action="/leads/{{ lead.id }}/delete" style="margin-top:8px" onsubmit="return confirm('Удалить лид #{{ lead.id }}?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-danger" style="width:100%">Удалить лид</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+{% if history %}
+<div class="card" style="margin-top:16px">
+    <h2>История изменений</h2>
+    <div class="history-list">
+        {% for h in history %}
+            {% if h.action != 'note' %}
+            <div class="history-item">
+                <div class="history-dot"></div>
+                <div>
+                    <div class="history-text">
+                        {% if h.action == 'status_change' %}
+                        Статус: {{ h.old_value }} → {{ h.new_value }}
+                        {% elif h.action == 'created' %}
+                        Создан
+                        {% elif h.action == 'reassigned' %}
+                        Назначен ответственный
+                        {% else %}
+                        {{ h.action }}
+                        {% endif %}
+                        {% if h.user %}
+                        <span style="color:var(--text-muted)"> · {{ h.user.full_name or h.user.username }}</span>
+                        {% endif %}
+                    </div>
+                    {% if h.note and h.action != 'created' %}
+                    <div class="history-time">{{ h.note }}</div>
+                    {% endif %}
+                    <div class="history-time">{{ h.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+                </div>
+            </div>
+            {% endif %}
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

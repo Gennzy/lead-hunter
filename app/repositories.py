@@ -1,0 +1,605 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Optional, Sequence, Generic, TypeVar
+from sqlalchemy.orm.attributes import flag_modified
+
+from sqlalchemy import select, func as sa_func, and_, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import (
+    Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage,
+)
+
+ModelType = TypeVar("ModelType")
+
+
+class BaseRepository(Generic[ModelType]):
+    """Base repository with automatic tenant_id scoping."""
+
+    model: type[ModelType]
+
+    def __init__(self, session: AsyncSession, tenant_id: int | None = None):
+        self.session = session
+        self.tenant_id = tenant_id
+
+    def _tenant_filter(self, model):
+        if self.tenant_id is not None:
+            return model.tenant_id == self.tenant_id
+        return True
+
+
+class TenantRepository(BaseRepository):
+    async def get_by_id(self, tenant_id: int) -> Optional[Tenant]:
+        result = await self.session.execute(
+            select(Tenant).where(Tenant.id == tenant_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_slug(self, slug: str) -> Optional[Tenant]:
+        result = await self.session.execute(
+            select(Tenant).where(Tenant.slug == slug)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_all(self) -> list[Tenant]:
+        result = await self.session.execute(
+            select(Tenant).order_by(Tenant.id)
+        )
+        return list(result.scalars().all())
+
+    async def get_active(self) -> list[Tenant]:
+        result = await self.session.execute(
+            select(Tenant).where(Tenant.is_active == True).order_by(Tenant.id)
+        )
+        return list(result.scalars().all())
+
+    async def create(self, name: str, slug: str, city: str = None, config: dict = None) -> Tenant:
+        tenant = Tenant(name=name, slug=slug, city=city, config=config or {})
+        self.session.add(tenant)
+        await self.session.flush()
+        return tenant
+
+    async def update_config(self, tenant_id: int, config: dict) -> Optional[Tenant]:
+        tenant = await self.get_by_id(tenant_id)
+        if tenant:
+            tenant.config = config
+            flag_modified(tenant, "config")
+            await self.session.flush()
+        return tenant
+
+    async def toggle_active(self, tenant_id: int) -> Optional[Tenant]:
+        tenant = await self.get_by_id(tenant_id)
+        if tenant:
+            tenant.is_active = not tenant.is_active
+            await self.session.flush()
+        return tenant
+
+
+class UserRepository(BaseRepository):
+    async def get_by_id(self, user_id: int) -> Optional[User]:
+        filters = [User.id == user_id]
+        if self.tenant_id is not None:
+            filters.append(User.tenant_id == self.tenant_id)
+        result = await self.session.execute(select(User).where(*filters))
+        return result.scalar_one_or_none()
+
+    async def get_by_username(self, username: str) -> Optional[User]:
+        filters = [User.username == username]
+        if self.tenant_id is not None:
+            filters.append(User.tenant_id == self.tenant_id)
+        result = await self.session.execute(select(User).where(*filters))
+        return result.scalar_one_or_none()
+
+    async def get_super_admin(self, username: str) -> Optional[User]:
+        result = await self.session.execute(
+            select(User).where(User.username == username, User.role == "super_admin")
+        )
+        return result.scalar_one_or_none()
+
+    async def list_all(self) -> list[User]:
+        filters = []
+        if self.tenant_id is not None:
+            filters.append(User.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(User).where(*filters).order_by(User.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def list_managers(self) -> list[User]:
+        filters = [User.role.in_(["manager", "admin"]), User.is_active == True]
+        if self.tenant_id is not None:
+            filters.append(User.tenant_id == self.tenant_id)
+        result = await self.session.execute(select(User).where(*filters))
+        return list(result.scalars().all())
+
+    async def list_active(self) -> list[User]:
+        filters = [User.is_active == True]
+        if self.tenant_id is not None:
+            filters.append(User.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(User).where(*filters).order_by(User.role, User.username)
+        )
+        return list(result.scalars().all())
+
+    async def create(self, **kwargs) -> User:
+        if self.tenant_id is not None:
+            kwargs["tenant_id"] = self.tenant_id
+        user = User(**kwargs)
+        self.session.add(user)
+        await self.session.flush()
+        return user
+
+    async def count_leads(self, user_id: int) -> int:
+        filters = [Lead.assigned_to == user_id, Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return result.scalar_one() or 0
+
+    async def get_lead_counts_by_user(self) -> dict[int, int]:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(Lead.assigned_to, sa_func.count(Lead.id))
+            .where(*filters)
+            .group_by(Lead.assigned_to)
+        )
+        return {row[0]: row[1] for row in result.fetchall()}
+
+
+class LeadRepository(BaseRepository):
+    async def get_by_id(self, lead_id: int) -> Optional[Lead]:
+        filters = [Lead.id == lead_id]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(select(Lead).where(*filters))
+        return result.scalar_one_or_none()
+
+    async def count(self, *extra_filters) -> int:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        filters.extend(extra_filters)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return result.scalar_one() or 0
+
+    async def count_by_status(self) -> list[tuple[str, int]]:
+        filters = []
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(Lead.status, sa_func.count(Lead.id))
+            .where(*filters)
+            .group_by(Lead.status)
+        )
+        return result.fetchall()
+
+    async def count_today(self, today_start: datetime) -> int:
+        filters = [Lead.status != "deleted", Lead.created_at >= today_start]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return result.scalar_one() or 0
+
+    async def count_this_week(self, week_start: datetime) -> int:
+        filters = [Lead.status != "deleted", Lead.created_at >= week_start]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return result.scalar_one() or 0
+
+    async def list_leads(
+        self,
+        status: str = None,
+        chat: str = None,
+        search: str = None,
+        sort: str = "created_at",
+        assigned_to: int = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[Lead], int]:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        if status:
+            filters.append(Lead.status == status)
+        if chat:
+            filters.append(Lead.chat_title == chat)
+        if assigned_to:
+            filters.append(Lead.assigned_to == assigned_to)
+        if search:
+            search_pattern = f"%{search}%"
+            filters.append(
+                or_(
+                    Lead.message_text.ilike(search_pattern),
+                    Lead.first_name.ilike(search_pattern),
+                    Lead.last_name.ilike(search_pattern),
+                    Lead.username.ilike(search_pattern),
+                    Lead.chat_title.ilike(search_pattern),
+                    Lead.reply_to_text.ilike(search_pattern),
+                )
+            )
+
+        count_result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        total = count_result.scalar_one() or 0
+
+        query = select(Lead).where(*filters)
+        if sort == "score":
+            query = query.order_by(Lead.lead_score.desc())
+        elif sort == "urgency":
+            from sqlalchemy import case
+            urgency_order = case(
+                (Lead.urgency == "high", 1),
+                (Lead.urgency == "medium", 2),
+                (Lead.urgency == "low", 3),
+                else_=4,
+            )
+            query = query.order_by(urgency_order)
+        elif sort == "name":
+            query = query.order_by(Lead.first_name.asc())
+        else:
+            query = query.order_by(Lead.created_at.desc())
+        query = query.offset(offset).limit(limit)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all()), total
+
+    async def list_chats(self, assigned_to: int = None) -> list[str]:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        if assigned_to:
+            filters.append(Lead.assigned_to == assigned_to)
+        result = await self.session.execute(
+            select(Lead.chat_title).distinct().where(*filters).order_by(Lead.chat_title)
+        )
+        return [r[0] for r in result.fetchall()]
+
+    async def list_recent(self, limit: int = 20) -> list[Lead]:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(Lead).where(*filters).order_by(Lead.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_prev_next(self, lead_id: int) -> tuple[Optional[int], Optional[int]]:
+        filters_base = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters_base.append(Lead.tenant_id == self.tenant_id)
+
+        prev_q = select(Lead.id).where(Lead.id < lead_id, *filters_base).order_by(Lead.id.desc()).limit(1)
+        next_q = select(Lead.id).where(Lead.id > lead_id, *filters_base).order_by(Lead.id.asc()).limit(1)
+        prev_id = (await self.session.execute(prev_q)).scalar()
+        next_id = (await self.session.execute(next_q)).scalar()
+        return prev_id, next_id
+
+    async def list_archive(
+        self,
+        chat: str = None,
+        search: str = None,
+        sort: str = "created_at",
+        assigned_to: int = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[Lead], int]:
+        filters = [Lead.status == "archive"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        if chat:
+            filters.append(Lead.chat_title == chat)
+        if assigned_to:
+            filters.append(Lead.assigned_to == assigned_to)
+        if search:
+            search_pattern = f"%{search}%"
+            filters.append(
+                or_(
+                    Lead.message_text.ilike(search_pattern),
+                    Lead.first_name.ilike(search_pattern),
+                    Lead.last_name.ilike(search_pattern),
+                    Lead.username.ilike(search_pattern),
+                    Lead.chat_title.ilike(search_pattern),
+                )
+            )
+
+        count_result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        total = count_result.scalar_one() or 0
+
+        query = select(Lead).where(*filters)
+        if sort == "score":
+            query = query.order_by(Lead.lead_score.desc())
+        elif sort == "name":
+            query = query.order_by(Lead.first_name.asc())
+        else:
+            query = query.order_by(Lead.created_at.desc())
+        query = query.offset(offset).limit(limit)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all()), total
+
+    async def get_analytics(self) -> dict:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+
+        by_chat_q = (
+            select(Lead.chat_title, sa_func.count(Lead.id), sa_func.avg(Lead.lead_score))
+            .where(*filters)
+            .group_by(Lead.chat_title)
+            .order_by(sa_func.count(Lead.id).desc())
+        )
+        by_status_q = (
+            select(Lead.status, sa_func.count(Lead.id))
+            .where(*filters)
+            .group_by(Lead.status)
+        )
+        total_leads_q = select(sa_func.count(Lead.id)).where(*filters)
+        avg_score_q = select(sa_func.avg(Lead.lead_score)).where(*filters)
+        high_q = select(sa_func.count(Lead.id)).where(*filters, Lead.lead_score >= 90)
+        med_q = select(sa_func.count(Lead.id)).where(
+            *filters, and_(Lead.lead_score >= 70, Lead.lead_score < 90)
+        )
+
+        by_chat = (await self.session.execute(by_chat_q)).fetchall()
+        by_status = (await self.session.execute(by_status_q)).fetchall()
+        total_leads = (await self.session.execute(total_leads_q)).scalar() or 0
+        avg_score = (await self.session.execute(avg_score_q)).scalar() or 0
+        high_score = (await self.session.execute(high_q)).scalar() or 0
+        medium_score = (await self.session.execute(med_q)).scalar() or 0
+
+        return {
+            "by_chat": by_chat,
+            "by_status": by_status,
+            "total_leads": total_leads,
+            "avg_score": round(avg_score, 1) if avg_score else 0,
+            "high_score": high_score,
+            "medium_score": medium_score,
+        }
+
+    async def create(self, **kwargs) -> Lead:
+        if self.tenant_id is not None:
+            kwargs["tenant_id"] = self.tenant_id
+        lead = Lead(**kwargs)
+        self.session.add(lead)
+        await self.session.flush()
+        return lead
+
+    async def update_status(self, lead_id: int, new_status: str) -> Optional[Lead]:
+        lead = await self.get_by_id(lead_id)
+        if lead:
+            old = lead.status
+            lead.status = new_status
+            await self.session.flush()
+            return lead
+        return None
+
+    async def is_duplicate(self, user_id: int, dedup_days: int) -> bool:
+        cutoff = datetime.utcnow() - timedelta(days=dedup_days)
+        filters = [Lead.user_id == user_id, Lead.created_at >= cutoff]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return (result.scalar_one() or 0) > 0
+
+
+class LeadHistoryRepository(BaseRepository):
+    async def list_for_lead(self, lead_id: int) -> list[LeadHistory]:
+        filters = [LeadHistory.lead_id == lead_id]
+        if self.tenant_id is not None:
+            filters.append(LeadHistory.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(LeadHistory).where(*filters).order_by(LeadHistory.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def create(self, **kwargs) -> LeadHistory:
+        if self.tenant_id is not None:
+            kwargs["tenant_id"] = self.tenant_id
+        entry = LeadHistory(**kwargs)
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+
+class BlacklistedUserRepository(BaseRepository):
+    async def is_blacklisted(self, user_id: int) -> bool:
+        filters = [BlacklistedUser.user_id == user_id]
+        if self.tenant_id is not None:
+            filters.append(BlacklistedUser.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(BlacklistedUser.id)).where(*filters)
+        )
+        return (result.scalar_one() or 0) > 0
+
+    async def add(self, user_id: int, reason: str = None) -> BlacklistedUser:
+        entry = BlacklistedUser(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            reason=reason,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+
+class ProcessedMessageRepository(BaseRepository):
+    async def is_processed(self, chat_title: str, message_id: int) -> bool:
+        filters = [
+            ProcessedMessage.chat_title == chat_title,
+            ProcessedMessage.message_id == message_id,
+        ]
+        if self.tenant_id is not None:
+            filters.append(ProcessedMessage.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(ProcessedMessage.id)).where(*filters)
+        )
+        return (result.scalar_one() or 0) > 0
+
+    async def mark(self, chat_title: str, message_id: int) -> ProcessedMessage:
+        entry = ProcessedMessage(
+            tenant_id=self.tenant_id,
+            chat_title=chat_title,
+            message_id=message_id,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+    async def cleanup_old(self, days: int = 30) -> int:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        filters = [ProcessedMessage.created_at < cutoff]
+        if self.tenant_id is not None:
+            filters.append(ProcessedMessage.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(ProcessedMessage).where(*filters)
+        )
+        old = result.scalars().all()
+        for entry in old:
+            await self.session.delete(entry)
+        await self.session.flush()
+        return len(old)
+
+
+class TelegramSessionRepository(BaseRepository[TelegramSession]):
+    model = TelegramSession
+
+    async def get_by_tenant(self, tenant_id: int) -> Optional[TelegramSession]:
+        result = await self.session.execute(
+            select(TelegramSession).where(TelegramSession.tenant_id == tenant_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_active_by_tenant(self, tenant_id: int) -> Optional[TelegramSession]:
+        result = await self.session.execute(
+            select(TelegramSession).where(
+                TelegramSession.tenant_id == tenant_id,
+                TelegramSession.is_active == True
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create(self, tenant_id: int, session_name: str,
+                     phone_number: str = None, **kwargs) -> TelegramSession:
+        entry = TelegramSession(
+            tenant_id=tenant_id,
+            session_name=session_name,
+            phone_number=phone_number,
+            **kwargs
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+    async def update_auth_status(self, tenant_id: int, is_authorized: bool,
+                                 phone_number: str = None):
+        entry = await self.get_by_tenant(tenant_id)
+        if entry:
+            entry.is_authorized = is_authorized
+            if phone_number:
+                entry.phone_number = phone_number
+            await self.session.flush()
+        return entry
+
+    async def set_active(self, tenant_id: int, is_active: bool):
+        entry = await self.get_by_tenant(tenant_id)
+        if entry:
+            entry.is_active = is_active
+            await self.session.flush()
+        return entry
+
+
+class TenantUsageRepository(BaseRepository[TenantUsage]):
+    model = TenantUsage
+
+    async def log_event(self, tenant_id: int, event_type: str,
+                        tokens_used: int = 0, model_used: str = None,
+                        cost_usd: float = 0.0) -> TenantUsage:
+        entry = TenantUsage(
+            tenant_id=tenant_id,
+            event_type=event_type,
+            tokens_used=tokens_used,
+            model_used=model_used,
+            cost_usd=cost_usd,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+        return entry
+
+    async def count_events_today(self, tenant_id: int, event_type: str) -> int:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.count(TenantUsage.id)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.event_type == event_type,
+                TenantUsage.created_at >= today_start
+            )
+        )
+        return result.scalar() or 0
+
+    async def sum_tokens_today(self, tenant_id: int) -> int:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.sum(TenantUsage.tokens_used)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.created_at >= today_start
+            )
+        )
+        return result.scalar() or 0
+
+    async def sum_cost_today(self, tenant_id: int) -> float:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.sum(TenantUsage.cost_usd)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.created_at >= today_start
+            )
+        )
+        return result.scalar() or 0.0
+
+    async def count_events_month(self, tenant_id: int, event_type: str) -> int:
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.count(TenantUsage.id)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.event_type == event_type,
+                TenantUsage.created_at >= month_start
+            )
+        )
+        return result.scalar() or 0
+
+    async def sum_tokens_month(self, tenant_id: int) -> int:
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.sum(TenantUsage.tokens_used)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.created_at >= month_start
+            )
+        )
+        return result.scalar() or 0
+
+    async def sum_cost_month(self, tenant_id: int) -> float:
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(sa_func.sum(TenantUsage.cost_usd)).where(
+                TenantUsage.tenant_id == tenant_id,
+                TenantUsage.created_at >= month_start
+            )
+        )
+        return result.scalar() or 0.0

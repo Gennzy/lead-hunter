@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Лиды — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Лиды <small>{{ total }}</small></h1>
+    <div style="display:flex;gap:8px">
+        {% if user and user.role != 'viewer' %}
+        <a href="/leads/new" class="btn btn-primary">+ Новый лид</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="status-tabs">
+    {% set all_statuses = [('','Все', total), ('new','Новые', status_counts.get('new',0)), ('contacted','Контакт', status_counts.get('contacted',0)), ('interested','Заинтересован', status_counts.get('interested',0)), ('deal','Сделки', status_counts.get('deal',0)), ('not_interested','Не интересуют', status_counts.get('not_interested',0)), ('archive','Архив', status_counts.get('archive',0)), ('deleted','Удалённые', status_counts.get('deleted',0))] %}
+    {% for val, label, cnt in all_statuses %}
+    <a href="/leads{% if val %}?status={{ val }}{% endif %}" class="tab {% if status_filter == val %}active{% endif %}">
+        {{ label }} <span class="tab-count">{{ cnt }}</span>
+    </a>
+    {% endfor %}
+</div>
+
+<div class="filters-bar">
+    <form method="get" class="filters-form" id="filtersForm">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <select name="chat" onchange="this.form.submit()">
+            <option value="">Все чаты</option>
+            {% for c in available_chats %}
+            <option value="{{ c }}" {% if chat_filter == c %}selected{% endif %}>{{ c[:40] }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="search" placeholder="Поиск..." value="{{ search }}">
+        <input type="date" name="date_from" value="{{ date_from }}" title="От даты">
+        <input type="date" name="date_to" value="{{ date_to }}" title="До даты">
+        <select name="sort" onchange="this.form.submit()">
+            <option value="">Сортировка</option>
+            <option value="score" {% if sort == 'score' %}selected{% endif %}>По Score</option>
+            <option value="urgency" {% if sort == 'urgency' %}selected{% endif %}>По срочности</option>
+            <option value="name" {% if sort == 'name' %}selected{% endif %}>По имени</option>
+            <option value="date" {% if sort == 'date' %}selected{% endif %}>По дате</option>
+        </select>
+        <button type="submit" class="btn btn-primary btn-sm">Применить</button>
+        <a href="/leads" class="btn btn-secondary btn-sm">Сбросить</a>
+    </form>
+</div>
+
+{% if user and user.role != 'viewer' %}
+<div id="bulkToolbar" class="bulk-toolbar" style="display:none">
+    <span id="bulkCount">0 выбрано</span>
+    <select id="bulkAction">
+        <option value="new">Новый</option>
+        <option value="contacted">Контактировали</option>
+        <option value="interested">Заинтересован</option>
+        <option value="not_interested">Не интересует</option>
+        <option value="deal">Сделка</option>
+        <option value="archive">Архив</option>
+        <option value="delete">Удалить</option>
+    </select>
+    <button onclick="submitBulk()" class="btn btn-primary btn-sm">Применить</button>
+    <button onclick="clearSelection()" class="btn btn-secondary btn-sm">Отмена</button>
+</div>
+{% endif %}
+
+<div class="table-wrap">
+    <table class="data-table" id="leadsTable">
+        <thead>
+            <tr>
+                {% if user and user.role != 'viewer' %}
+                <th style="width:40px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
+                {% endif %}
+                <th><a href="?sort=name&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Имя</a></th>
+                <th><a href="?&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Чат</a></th>
+                <th style="text-align:center"><a href="?sort=score&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Score</a></th>
+                <th style="text-align:center">Возраст</th>
+                <th>Статус</th>
+                <th>Сообщение</th>
+                <th style="width:40px"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for lead in leads %}
+            <tr data-id="{{ lead.id }}">
+                {% if user and user.role != 'viewer' %}
+                <td><input type="checkbox" class="lead-cb" value="{{ lead.id }}" onchange="updateBulkToolbar()"></td>
+                {% endif %}
+                <td>
+                    <a href="/leads/{{ lead.id }}" style="font-weight:500">
+                        {% if lead.first_name or lead.last_name %}
+                        {{ ((lead.first_name or '') ~ ' ' ~ (lead.last_name or ''))[:25] }}
+                        {% elif lead.username %}
+                        @{{ lead.username[:20] }}
+                        {% elif lead.user_id %}
+                        User #{{ lead.user_id }}
+                        {% else %}—{% endif %}
+                    </a>
+                    {% if lead.username %}
+                    <div style="color:var(--text-muted);font-size:11px">@{{ lead.username[:15] }}</div>
+                    {% elif lead.user_id %}
+                    <div style="font-size:11px"><a href="tg://user?id={{ lead.user_id }}" style="color:var(--primary)">ID: {{ lead.user_id }}</a></div>
+                    {% endif %}
+                </td>
+                <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
+                <td style="text-align:center">
+                    <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
+                </td>
+                <td style="text-align:center;font-size:12px">
+                    {% set age_h = ((now - lead.created_at).total_seconds() / 3600) if lead.created_at and now else 0 %}
+                    {% if age_h < 1 %}
+                    <span style="color:#16a34a;font-weight:600" title="< 1 часа">Новый</span>
+                    {% elif age_h < 4 %}
+                    <span style="color:#ca8a04" title="{{ age_h|round(0) }}ч">{{ age_h|round(0) }}ч</span>
+                    {% else %}
+                    <span style="color:#dc2626;font-weight:600" title="{{ age_h|round(0) }}ч">{{ age_h|round(0) }}ч</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if user and user.role != 'viewer' %}
+                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form" style="display:inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <select name="status" onchange="this.form.submit()" style="font-size:11px;padding:3px 6px">
+                            <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
+                            <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контакт</option>
+                            <option value="interested" {% if lead.status == 'interested' %}selected{% endif %}>Заинтересован</option>
+                            <option value="not_interested" {% if lead.status == 'not_interested' %}selected{% endif %}>Не интересует</option>
+                            <option value="deal" {% if lead.status == 'deal' %}selected{% endif %}>Сделка</option>
+                            <option value="archive" {% if lead.status == 'archive' %}selected{% endif %}>Архив</option>
+                            <option value="deleted" {% if lead.status == 'deleted' %}selected{% endif %}>Удалён</option>
+                        </select>
+                    </form>
+                    {% else %}
+                    <span style="font-size:11px">{{ lead.status }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="msg-link" onclick="openLeadModal(this)"
+                          data-id="{{ lead.id }}"
+                          data-msg="{{ lead.message_text|escape }}"
+                          data-reply="{{ (lead.reply_to_text or '')|escape }}"
+                          data-name="{{ ((lead.first_name or '') ~ ' ' ~ (lead.last_name or ''))|escape }}"
+                          data-username="{{ (lead.username or '')|escape }}"
+                          data-userid="{{ lead.user_id or '' }}"
+                          data-chat="{{ lead.chat_title|escape }}"
+                          data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}"
+                          data-reason="{{ (lead.reason or '')|escape }}"
+                          data-rec="{{ (lead.recommended_message or '')|escape }}"
+                          data-score="{{ lead.lead_score }}"
+                          data-urgency="{{ lead.urgency }}"
+                          data-status="{{ lead.status }}"
+                          data-profile="{{ lead.profile_url()|escape }}">
+                        {{ lead.message_text[:60] }}{% if lead.message_text|length > 60 %}...{% endif %}
+                    </span>
+                </td>
+                <td>
+                    <a href="/leads/{{ lead.id }}" class="btn-icon" title="Подробнее">→</a>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not leads %}
+            <tr><td colspan="8" class="empty-state">Нет лидов по заданным фильтрам</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="?page={{ page-1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">← Назад</a>
+    {% endif %}
+    <span class="page-info">Страница {{ page }} из {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?page={{ page+1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">Далее →</a>
+    {% endif %}
+</div>
+
+<div id="leadModal" class="modal" style="display:none">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modalTitle">&nbsp;</h3>
+            <button class="modal-close" id="modalCloseBtn">&times;</button>
+        </div>
+        <div id="modalBody" style="padding:20px 24px"></div>
+    </div>
+</div>
+
+<form id="bulkForm" method="post" action="/leads/bulk-action" style="display:none">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="lead_ids" id="bulkIds">
+    <input type="hidden" name="action" id="bulkActionValue">
+</form>
+
+<script>
+function escapeHtml(t){if(!t)return'';var d=document.createElement('div');d.appendChild(document.createTextNode(t));return d.innerHTML}
+
+function openLeadModal(el){
+    var m=document.getElementById('leadModal'),b=document.getElementById('modalBody'),h=document.getElementById('modalTitle');
+    var sl={new:'Новый',contacted:'Контактировали',interested:'Заинтересован',not_interested:'Не интересует',deal:'Сделка',archive:'Архив',deleted:'Удалён'};
+    var ul={high:'Высокая',medium:'Средняя',low:'Низкая'};
+    var s=parseFloat(el.getAttribute('data-score'))||0;
+    var sc=s>=90?'#dc2626':s>=80?'#d97706':s>=70?'#d97706':'#16a34a';
+    var id=el.getAttribute('data-id'),pf=el.getAttribute('data-profile')||'',un=el.getAttribute('data-username')||'',uid=el.getAttribute('data-userid')||'';
+    h.textContent='Лид #'+id;
+    var r=el.getAttribute('data-reply'),x='';
+    if(r){x+='<div style="background:#faf6f1;border-left:3px solid #d4b896;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;color:#57534e"><div style="font-size:11px;color:#a8a29e;margin-bottom:4px">Ответ на:</div>'+escapeHtml(r)+'</div>'}
+    x+='<div class="modal-msg">'+escapeHtml(el.getAttribute('data-msg'))+'</div>';
+    x+='<dl class="modal-meta"><dt>Чат</dt><dd>'+escapeHtml(el.getAttribute('data-chat'))+'</dd>';
+    x+='<dt>Пользователь</dt><dd>'+escapeHtml(el.getAttribute('data-name'));
+    if(un)x+=' <span style="color:var(--text-muted)">@'+escapeHtml(un)+'</span>';
+    else if(uid)x+=' <span style="color:var(--text-muted)">ID: '+escapeHtml(uid)+'</span>';
+    x+='</dd><dt>Дата</dt><dd>'+escapeHtml(el.getAttribute('data-date'))+'</dd>';
+    x+='<dt>Score</dt><dd><span class="score-badge" style="background:'+sc+'">'+s+'</span></dd>';
+    x+='<dt>Срочность</dt><dd>'+(ul[el.getAttribute('data-urgency')]||'')+'</dd>';
+    x+='<dt>Статус</dt><dd>'+(sl[el.getAttribute('data-status')]||'')+'</dd></dl>';
+    var reason=el.getAttribute('data-reason'),rec=el.getAttribute('data-rec');
+    if(reason)x+='<div class="modal-section modal-reason"><strong>Причина:</strong> '+escapeHtml(reason)+'</div>';
+    if(rec)x+='<div class="modal-section modal-rec"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><strong style="color:var(--success)">Рекомендуемое сообщение:</strong><button class="btn btn-sm btn-outline copy-rec-btn" style="font-size:11px;padding:3px 10px">Копировать</button></div><div class="rec-text" style="line-height:1.6">'+escapeHtml(rec)+'</div></div>';
+    x+='<div class="modal-actions">';
+    if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" class="btn btn-primary btn-sm">Написать в Telegram</a>';
+    if(!un&&uid)x+='<button onclick="navigator.clipboard.writeText(\''+uid+'\').then(function(){alert(\'ID скопирован: \'+uid)})" class="btn btn-secondary btn-sm">Скопировать ID</button>';
+    x+='<a href="/leads/'+id+'" class="btn btn-secondary btn-sm">Подробнее →</a></div>';
+    b.innerHTML=x;m.style.display='flex';
+}
+
+document.getElementById('modalCloseBtn').addEventListener('click',function(){document.getElementById('leadModal').style.display='none'});
+document.getElementById('leadModal').addEventListener('click',function(e){if(e.target.id==='leadModal')this.style.display='none'});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')document.getElementById('leadModal').style.display='none'});
+document.getElementById('modalBody').addEventListener('click',function(e){if(e.target.classList.contains('copy-rec-btn')){var t=e.target.closest('.modal-rec').querySelector('.rec-text');navigator.clipboard.writeText(t.textContent.trim()).then(function(){e.target.textContent='Скопировано!';setTimeout(function(){e.target.textContent='Копировать'},1500)})}});
+
+function toggleSelectAll(cb){document.querySelectorAll('.lead-cb').forEach(function(c){c.checked=cb.checked});updateBulkToolbar()}
+function updateBulkToolbar(){var c=document.querySelectorAll('.lead-cb:checked'),t=document.getElementById('bulkToolbar');document.getElementById('bulkCount').textContent=c.length+' выбрано';t.style.display=c.length>0?'flex':'none'}
+function clearSelection(){document.querySelectorAll('.lead-cb').forEach(function(c){c.checked=false});document.getElementById('selectAll').checked=false;updateBulkToolbar()}
+function submitBulk(){var c=document.querySelectorAll('.lead-cb:checked'),ids=[];c.forEach(function(i){ids.push(i.value)});var a=document.getElementById('bulkAction').value;if(a==='delete'&&!confirm('Удалить '+ids.length+' лид(ов)?'))return;document.getElementById('bulkIds').value=ids.join(',');document.getElementById('bulkActionValue').value=a;document.getElementById('bulkForm').submit()}
+</script>
+{% endblock %}

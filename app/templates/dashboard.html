@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">Обзор лидов на ремонт квартир</p>
+
+<div class="stats-grid">
+    <div class="stat-card primary">
+        <div class="stat-icon pi">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+        </div>
+        <div class="stat-number">{{ total }}</div>
+        <div class="stat-label">Всего лидов</div>
+    </div>
+    <div class="stat-card info">
+        <div class="stat-icon ii">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        </div>
+        <div class="stat-number">{{ new_today }}</div>
+        <div class="stat-label">Новых сегодня</div>
+    </div>
+    <div class="stat-card warning">
+        <div class="stat-icon wi">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        </div>
+        <div class="stat-number">{{ unprocessed_count }}</div>
+        <div class="stat-label">Не обработано</div>
+    </div>
+    <div class="stat-card success">
+        <div class="stat-icon si">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="stat-number">{{ processed_today }}</div>
+        <div class="stat-label">Обработано сегодня</div>
+    </div>
+    {% if overdue_count > 0 %}
+    <div class="stat-card danger" style="border-left:3px solid #dc2626">
+        <div class="stat-icon" style="color:#dc2626">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div class="stat-number" style="color:#dc2626">{{ overdue_count }}</div>
+        <div class="stat-label">Просрочено (>4ч)</div>
+    </div>
+    {% endif %}
+    <div class="stat-card success">
+        <div class="stat-icon si">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="stat-number">{{ status_counts.get('deal', 0) }}</div>
+        <div class="stat-label">Сделки</div>
+    </div>
+</div>
+
+{% if hot_leads %}
+<div class="card" style="margin-bottom:20px;border-left:3px solid var(--primary)">
+    <h3>Самые горячие лиды</h3>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Score</th>
+                    <th>Пользователь</th>
+                    <th>Чат</th>
+                    <th>Возраст</th>
+                    <th>Текст</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for lead in hot_leads %}
+                {% set age_hours = ((now if now else lead.created_at) - lead.created_at).total_seconds() / 3600 if lead.created_at else 0 %}
+                <tr>
+                    <td><span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score }}</span></td>
+                    <td>
+                        <a href="/leads/{{ lead.id }}">{{ (lead.first_name or '')[:15] }}</a>
+                    </td>
+                    <td class="msg-preview" style="max-width:140px">{{ lead.chat_title[:20] }}</td>
+                    <td>
+                        {% if age_hours < 1 %}
+                        <span style="color:#16a34a;font-weight:600">Новый</span>
+                        {% elif age_hours < 4 %}
+                        <span style="color:#ca8a04">{{ age_hours|round(0) }}ч</span>
+                        {% else %}
+                        <span style="color:#dc2626;font-weight:600">{{ age_hours|round(0) }}ч</span>
+                        {% endif %}
+                    </td>
+                    <td class="msg-preview" style="max-width:200px">{{ lead.message_text[:50] }}{% if lead.message_text|length > 50 %}...{% endif %}</td>
+                    <td><a href="/leads/{{ lead.id }}" class="btn btn-sm btn-primary">Открыть</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="grid-2">
+    <div class="card">
+        <h3>Статусы лидов</h3>
+        <div class="status-bars">
+            {% set status_labels = {'new': 'Новые', 'contacted': 'Контакт', 'interested': 'Заинтересованы', 'not_interested': 'Не интересуют', 'deal': 'Сделки', 'archive': 'Архив', 'deleted': 'Удалённые'} %}
+            {% for status, count in status_counts.items() %}
+            <div class="status-bar-row">
+                <span class="status-label">{{ status_labels.get(status, status) }}</span>
+                <div class="bar-bg">
+                    <div class="bar-fill" style="width: {{ (count / total * 100) if total > 0 else 0 }}%"></div>
+                </div>
+                <span class="status-count">{{ count }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Топ чатов</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Чат</th>
+                    <th style="text-align:right;width:80px">Лидов</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for chat_title, count in chat_leads %}
+                <tr>
+                    <td>{{ chat_title[:40] }}</td>
+                    <td style="text-align:right"><strong>{{ count }}</strong></td>
+                </tr>
+                {% endfor %}
+                {% if not chat_leads %}
+                <tr><td colspan="2" class="empty-state">Нет данных</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Сводка за неделю</h3>
+    <div class="stats-grid" style="margin-top:12px">
+        <div class="stat-card info">
+            <div class="stat-number">{{ new_week }}</div>
+            <div class="stat-label">Лидов за неделю</div>
+        </div>
+        <div class="stat-card success">
+            <div class="stat-number">{{ status_counts.get('deal', 0) }}</div>
+            <div class="stat-label">Сделок</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-number">{{ status_counts.get('contacted', 0) }}</div>
+            <div class="stat-label">Контактов</div>
+        </div>
+        <div class="stat-card primary">
+            <div class="stat-number">{% if total > 0 %}{{ ((status_counts.get('deal', 0) / total) * 100)|round(1) }}%{% else %}0%{% endif %}</div>
+            <div class="stat-label">Конверсия в сделки</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Последние лиды</h3>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>Чат</th>
+                    <th>Пользователь</th>
+                    <th style="text-align:center">Score</th>
+                    <th>Статус</th>
+                    <th>Текст</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for lead in recent_leads %}
+                <tr>
+                    <td style="white-space:nowrap">{{ lead.created_at.strftime('%d.%m %H:%M') }}</td>
+                    <td class="msg-preview" style="max-width:160px">{{ lead.chat_title[:25] }}</td>
+                    <td>
+                        <a href="{{ lead.profile_url() }}" target="_blank">
+                            {{ (lead.first_name or '')[:15] }}{{ (' ' + lead.last_name[:1]) if lead.last_name else '' }}
+                        </a>
+                    </td>
+                    <td style="text-align:center">
+                        <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score }}</span>
+                    </td>
+                    <td><span class="status-badge status-{{ lead.status }}">{{ lead.status_label() }}</span></td>
+                    <td class="msg-preview">{{ lead.message_text[:60] }}{% if lead.message_text|length > 60 %}...{% endif %}</td>
+                </tr>
+                {% endfor %}
+                {% if not recent_leads %}
+                <tr><td colspan="6" class="empty-state">Нет лидов</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div style="margin-top:20px;display:flex;gap:12px">
+    <a href="/billing" class="btn btn-outline">Биллинг и лимиты →</a>
+</div>
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Telegram — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Telegram сессия</h1>
+<p class="subtitle">Подключение Telegram аккаунта для мониторинга</p>
+
+{% if success %}
+<div style="background:#f0fdf4;color:#16a34a;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #bbf7d0">{{ success }}</div>
+{% endif %}
+{% if error %}
+<div style="background:#fef2f2;color:#dc2626;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #fecaca">{{ error }}</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Текущая сессия</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Telegram аккаунт для мониторинга чатов</p>
+
+    {% if telegram_session %}
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        <div>
+            <span style="color:var(--text-secondary);font-size:12px">Телефон:</span>
+            <strong>{{ telegram_session.phone_number or 'Не указан' }}</strong>
+        </div>
+        <div>
+            <span style="color:var(--text-secondary);font-size:12px">Статус:</span>
+            {% if telegram_session.is_authorized %}
+                <span style="color:#16a34a;font-weight:600">Авторизован</span>
+            {% else %}
+                <span style="color:#f59e0b;font-weight:600">Ожидает авторизации</span>
+            {% endif %}
+        </div>
+        <div>
+            <span style="color:var(--text-secondary);font-size:12px">Сессия:</span>
+            <strong>{{ telegram_session.session_name }}</strong>
+        </div>
+    </div>
+
+    {% if not telegram_session.is_authorized %}
+    <div style="margin-top:16px;padding:14px;background:var(--bg-secondary);border-radius:10px">
+        <h4 style="margin-bottom:10px">Авторизация</h4>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:10px">Введите код, полученный в Telegram</p>
+        <form method="post" action="/settings/telegram/authorize" style="display:flex;gap:8px;align-items:end">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group" style="margin:0;flex:1">
+                <input type="text" name="code" placeholder="12345" required style="width:100%">
+            </div>
+            <button type="submit" class="btn btn-primary">Подтвердить</button>
+        </form>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/settings/telegram/delete" style="margin-top:14px" onsubmit="return confirm('Удалить сессию Telegram?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger">Удалить сессию</button>
+    </form>
+
+    {% else %}
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Сессия не создана. Подключите Telegram аккаунт для начала мониторинга.</p>
+
+    <form method="post" action="/settings/telegram/create">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-group">
+            <label for="phone_number">Номер телефона</label>
+            <input type="text" id="phone_number" name="phone_number" placeholder="+79001234567" required>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Международный формат с кодом страны</p>
+        </div>
+        <button type="submit" class="btn btn-primary">Создать сессию</button>
+    </form>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Информация</h3>
+    <div style="font-size:13px;color:var(--text-secondary);line-height:1.8">
+        <p>Telegram сессия используется для:</p>
+        <ul style="margin:8px 0 8px 20px">
+            <li>Мониторинга указанных чатов и групп</li>
+            <li>Поиска сообщений, содержащих ключевые слова</li>
+            <li>Создания лидов из найденных сообщений</li>
+        </ul>
+        <p style="margin-top:10px"><strong>Важно:</strong> Используйте отдельный аккаунт для мониторинга. Не используйте личный аккаунт.</p>
+        <p style="margin-top:6px">После создания сессии перейдите в <a href="/settings" style="color:var(--primary)">Настройки</a> для настройки ключевых слов и чатов.</p>
+    </div>
+</div>
+{% endblock %}

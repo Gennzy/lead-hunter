@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Архив — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Архив <small>{{ total }}</small></h1>
+<p class="subtitle">Просмотренные и архивированные лиды</p>
+
+<div class="filters-bar">
+    <form method="get" class="filters-form">
+        <input type="text" name="search" placeholder="Поиск..." value="{{ search }}">
+        <button type="submit" class="btn btn-primary btn-sm">Фильтр</button>
+        <a href="/archive" class="btn btn-secondary btn-sm">Сбросить</a>
+    </form>
+</div>
+
+<div class="table-wrap">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Дата</th>
+                <th>Чат</th>
+                <th>Пользователь</th>
+                <th style="text-align:center">Score</th>
+                <th>Срочность</th>
+                <th>Статус</th>
+                <th>Сообщение</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for lead in leads %}
+            <tr>
+                <td style="white-space:nowrap">{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
+                <td>
+                    <a href="{{ lead.profile_url() }}" target="_blank">
+                        {{ lead.first_name or '' }}<br>
+                        <small style="color:var(--text-muted)">@{{ lead.username or '-' }}</small>
+                    </a>
+                </td>
+                <td style="text-align:center">
+                    <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score }}</span>
+                </td>
+                <td>
+                    {% if lead.urgency == 'high' %}🔥 Высокая
+                    {% elif lead.urgency == 'medium' %}⚡ Средняя
+                    {% else %}💤 Низкая{% endif %}
+                </td>
+                <td>
+                    {% if user and user.role != 'viewer' %}
+                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <select name="status" onchange="this.form.submit()">
+                            <option value="archive" selected>Архив</option>
+                            <option value="new">Новый</option>
+                            <option value="contacted">Контактировали</option>
+                            <option value="interested">Заинтересован</option>
+                            <option value="not_interested">Не интересует</option>
+                            <option value="deal">Сделка</option>
+                            <option value="deleted">Удалён</option>
+                        </select>
+                    </form>
+                    {% else %}Архив{% endif %}
+                </td>
+                <td>
+                    <span class="msg-link" onclick="openLeadModal(this)"
+                          data-id="{{ lead.id }}"
+                          data-msg="{{ lead.message_text|escape }}"
+                          data-name="{{ (lead.first_name or '')|escape }}"
+                          data-username="{{ (lead.username or '')|escape }}"
+                          data-chat="{{ lead.chat_title|escape }}"
+                          data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}"
+                          data-reason="{{ (lead.reason or '')|escape }}"
+                          data-rec="{{ (lead.recommended_message or '')|escape }}"
+                          data-score="{{ lead.lead_score }}"
+                          data-urgency="{{ lead.urgency }}"
+                          data-status="{{ lead.status }}"
+                          data-profile="{{ lead.profile_url()|escape }}">
+                        {{ lead.message_text[:80] }}{% if lead.message_text|length > 80 %}...{% endif %}
+                    </span>
+                </td>
+            </tr>
+            {% if lead.recommended_message %}
+            <tr class="recommendation-row">
+                <td colspan="7">
+                    <div class="recommendation-box">
+                        <strong>Рекомендуемое:</strong> {{ lead.recommended_message }}
+                        {% if lead.reason %} · <strong>Причина:</strong> {{ lead.reason }}{% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+            {% if not leads %}
+            <tr><td colspan="7" class="empty-state">Архив пуст</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="?page={{ page-1 }}&search={{ search }}" class="btn btn-secondary btn-sm">← Назад</a>
+    {% endif %}
+    <span class="page-info">Страница {{ page }} из {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?page={{ page+1 }}&search={{ search }}" class="btn btn-secondary btn-sm">Далее →</a>
+    {% endif %}
+</div>
+
+<div id="leadModal" class="modal" style="display:none">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modalTitle">&nbsp;</h3>
+            <button class="modal-close" id="modalCloseBtn">&times;</button>
+        </div>
+        <div id="modalBody" style="padding:20px 24px"></div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var m=document.getElementById('leadModal'),b=document.getElementById('modalBody'),h=document.getElementById('modalTitle');
+    function esc(t){if(!t)return'';var d=document.createElement('div');d.appendChild(document.createTextNode(t));return d.innerHTML}
+    function open(el){
+        var sl={new:'Новый',contacted:'Контактировали',interested:'Заинтересован',not_interested:'Не интересует',deal:'Сделка',archive:'Архив'};
+        var ul={high:'Высокая',medium:'Средняя',low:'Низкая'};
+        var s=parseFloat(el.getAttribute('data-score'))||0,sc=s>=90?'#dc2626':s>=80?'#d97706':s>=70?'#d97706':'#16a34a';
+        var pf=el.getAttribute('data-profile')||'';
+        h.textContent='Лид #'+el.getAttribute('data-id');
+        var x='<div class="modal-msg">'+esc(el.getAttribute('data-msg'))+'</div>';
+        x+='<dl class="modal-meta"><dt>Чат</dt><dd>'+esc(el.getAttribute('data-chat'))+'</dd>';
+        x+='<dt>Пользователь</dt><dd>'+esc(el.getAttribute('data-name'))+(el.getAttribute('data-username')?' <span style="color:var(--text-muted)">@'+esc(el.getAttribute('data-username'))+'</span>':'')+'</dd>';
+        x+='<dt>Дата</dt><dd>'+esc(el.getAttribute('data-date'))+'</dd>';
+        x+='<dt>Score</dt><dd><span class="score-badge" style="background:'+sc+'">'+s+'</span></dd>';
+        x+='<dt>Срочность</dt><dd>'+(ul[el.getAttribute('data-urgency')]||'')+'</dd>';
+        x+='<dt>Статус</dt><dd>'+(sl[el.getAttribute('data-status')]||'')+'</dd></dl>';
+        var reason=el.getAttribute('data-reason'),rec=el.getAttribute('data-rec');
+        if(reason)x+='<div class="modal-section modal-reason"><strong>Причина:</strong> '+esc(reason)+'</div>';
+        if(rec)x+='<div class="modal-section modal-rec"><strong style="color:var(--success)">Рекомендуемое:</strong><div style="margin-top:6px;line-height:1.6">'+esc(rec)+'</div></div>';
+        if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" class="btn btn-primary btn-sm" style="display:inline-block;margin-top:8px;text-decoration:none">Написать в Telegram</a>';
+        b.innerHTML=x;m.style.display='flex';
+    }
+    document.querySelectorAll('.msg-link').forEach(function(el){el.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();open(el)})});
+    document.getElementById('modalCloseBtn').addEventListener('click',function(){m.style.display='none'});
+    m.addEventListener('click',function(e){if(e.target===m)m.style.display='none'});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')m.style.display='none'});
+})();
+</script>
+{% endblock %}

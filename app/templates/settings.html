@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Настройки</h1>
+<p class="subtitle">Управление чатами и конфигурацией</p>
+
+{% if success %}
+<div style="background:#f0fdf4;color:#16a34a;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #bbf7d0">{{ success }}</div>
+{% endif %}
+{% if error %}
+<div style="background:#fef2f2;color:#dc2626;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #fecaca">{{ error }}</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Компания</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Основные настройки вашей компании</p>
+
+    <form method="post" action="/settings/config">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <label for="company_name">Название компании</label>
+            <input type="text" id="company_name" name="company_name" value="{{ tenant_config.get('company_name', '') }}" placeholder="Ремонт-СПб">
+        </div>
+
+        <div class="form-group">
+            <label for="city">Город</label>
+            <input type="text" id="city" name="city" value="{{ tenant_config.get('city', '') }}" placeholder="Санкт-Петербург">
+        </div>
+
+        <div class="form-group">
+            <label for="min_lead_score">Минимальный порог лида (0-100)</label>
+            <input type="number" id="min_lead_score" name="min_lead_score" value="{{ tenant_config.get('min_lead_score', 70) }}" min="0" max="100">
+        </div>
+
+        <div class="form-group">
+            <label for="owner_chat_id">Telegram User ID (для уведомлений)</label>
+            <input type="number" id="owner_chat_id" name="owner_chat_id" value="{{ tenant_config.get('owner_chat_id', '') }}" placeholder="123456789">
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Узнать у @userinfobot в Telegram. Сюда будут приходить уведомления о новых лидах.</p>
+        </div>
+
+        <div class="form-group">
+            <label for="system_prompt">Системный промпт для AI</label>
+            <textarea id="system_prompt" name="system_prompt" rows="8" style="font-size:12px">{{ tenant_config.get('system_prompt', '') }}</textarea>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Оставьте пустым для использования промпта по умолчанию. Максимум 8000 символов.</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Внешний вид</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Кастомизация интерфейса для вашего тенанта</p>
+
+    <form method="post" action="/settings/config/appearance">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <label for="theme_color">Основной цвет (HEX)</label>
+            <div style="display:flex;gap:10px;align-items:center">
+                <input type="color" id="theme_color_preview" value="{{ tenant_config.get('theme_color', '#7c5832') }}" style="width:40px;height:36px;border:none;cursor:pointer" onchange="document.getElementById('theme_color').value=this.value">
+                <input type="text" id="theme_color" name="theme_color" value="{{ tenant_config.get('theme_color', '') }}" placeholder="#7c5832" pattern="^#[0-9a-fA-F]{6}$" style="width:120px">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="logo_url">URL логотипа</label>
+            <input type="url" id="logo_url" name="logo_url" value="{{ tenant_config.get('logo_url', '') }}" placeholder="https://example.com/logo.png">
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Отображается в боковой панели вместо иконки по умолчанию</p>
+        </div>
+
+        <div class="form-group">
+            <label for="favicon_url">URL фавиконки</label>
+            <input type="url" id="favicon_url" name="favicon_url" value="{{ tenant_config.get('favicon_url', '') }}" placeholder="https://example.com/favicon.ico">
+        </div>
+
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Ключевые слова</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Слова и фразы для определения лидов (по одному на строку, макс. 500)</p>
+
+    <form method="post" action="/settings/config/keywords">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <textarea name="keywords" rows="10" style="font-size:12px;font-family:monospace">{% for kw in tenant_config.get('keywords', []) %}{{ kw }}
+{% endfor %}</textarea>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Текущее количество: {{ tenant_config.get('keywords', [])|length }} слов</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Сохранить ключевые слова</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Шумовые слова</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Слова, которые НЕ являются лидами (по одному на строку, макс. 500)</p>
+
+    <form method="post" action="/settings/config/noise-keywords">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="form-group">
+            <textarea name="noise_keywords" rows="10" style="font-size:12px;font-family:monospace">{% for kw in tenant_config.get('noise_keywords', []) %}{{ kw }}
+{% endfor %}</textarea>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Текущее количество: {{ tenant_config.get('noise_keywords', [])|length }} слов</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Сохранить шумовые слова</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Прайс-лист (для автоматической оценки)</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Базовые цены для расчёта ориентировочной стоимости ремонта</p>
+
+    <form method="post" action="/settings/config/prices">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px">
+            {% set price_cats = [
+                ('bathroom', 'Ванная комната'),
+                ('kitchen', 'Кухня'),
+                ('balcony', 'Балкон'),
+                ('doors', 'Двери'),
+                ('windows', 'Окна'),
+                ('tiles', 'Плитка'),
+                ('flooring', 'Пол (ламинат/паркет)'),
+                ('walls', 'Стены'),
+                ('ceiling', 'Потолки'),
+                ('electric', 'Электрика'),
+                ('plumbing', 'Сантехника'),
+            ] %}
+            {% for cat_key, cat_name in price_cats %}
+            <div style="background:var(--bg-secondary);padding:12px;border-radius:8px">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px">{{ cat_name }}</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="number" name="price_{{ cat_key }}_min" placeholder="от"
+                           value="{{ tenant_config.get('price_list', {}).get(cat_key, {}).get('min', '') }}"
+                           style="width:90px;font-size:12px;padding:6px 8px">
+                    <span style="font-size:12px;color:var(--text-secondary)">–</span>
+                    <input type="number" name="price_{{ cat_key }}_max" placeholder="до"
+                           value="{{ tenant_config.get('price_list', {}).get(cat_key, {}).get('max', '') }}"
+                           style="width:90px;font-size:12px;padding:6px 8px">
+                    <select name="price_{{ cat_key }}_unit" style="font-size:11px;padding:4px">
+                        <option value="₽/м²" {% if tenant_config.get('price_list', {}).get(cat_key, {}).get('unit') == '₽/м²' %}selected{% endif %}>₽/м²</option>
+                        <option value="₽/шт" {% if tenant_config.get('price_list', {}).get(cat_key, {}).get('unit') == '₽/шт' %}selected{% endif %}>₽/шт</option>
+                        <option value="₽/м" {% if tenant_config.get('price_list', {}).get(cat_key, {}).get('unit') == '₽/м' %}selected{% endif %}>₽/м</option>
+                    </select>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="margin-top:14px">Сохранить прайс</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Мониторинг чатов</h3>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Добавьте Telegram-чаты для отслеживания сообщений о ремонте</p>
+
+    <form method="post" action="/settings/chats/add" class="add-chat-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="text" name="chat" placeholder="@chat_username или https://t.me/chat" required>
+        <button type="submit" class="btn btn-primary">Добавить</button>
+    </form>
+
+    <div class="chat-list">
+        {% for chat in chats %}
+        <div class="chat-item">
+            <span style="font-weight:500;font-size:13.5px">{{ chat }}</span>
+            <form method="post" action="/settings/chats/remove" class="inline-form">
+                <input type="hidden" name="chat" value="{{ chat }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
+            </form>
+        </div>
+        {% endfor %}
+        {% if not chats %}
+        <p class="empty-state">Чаты ещё не добавлены</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <h3>Telegram</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Подключение Telegram аккаунта для мониторинга</p>
+    <a href="/settings/telegram" class="btn btn-outline">Настроить Telegram →</a>
+</div>
+{% endblock %}
