@@ -101,8 +101,8 @@ class TelegramClientFactory:
         # Always use secure path from tenant_id, ignore user-provided session_name
         secure_path = _get_session_path(tenant_id)
 
-        api_id, api_hash = self._get_api_credentials(tenant_config)
-        client = TelegramClient(secure_path, int(api_id), api_hash)
+            api_id, api_hash = self._get_api_credentials(tenant_config)
+            client = TelegramClient(secure_path, int(api_id), api_hash, use_ipv6=True)
         self._clients[tenant_id] = client
 
         # Restrict permissions on session file after creation
