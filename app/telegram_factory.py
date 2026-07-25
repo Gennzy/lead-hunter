@@ -81,6 +81,7 @@ class TelegramClientFactory:
     def __init__(self):
         self._clients: dict[int, TelegramClient] = {}
         self._tasks: dict[int, asyncio.Task] = {}
+        self._phone_code_hashes: dict[int, str] = {}
         _restrict_session_dir()
 
     def _get_api_credentials(self, tenant_config=None) -> tuple[str, str]:
@@ -204,8 +205,9 @@ class TelegramClientFactory:
 
         try:
             if not client.is_connected():
-                await client.start()
+                await client.connect()
             result = await client.send_code_request(phone)
+            self._phone_code_hashes[tenant_id] = result.phone_code_hash
             return {"status": "code_sent", "phone_code_hash": result.phone_code_hash}
         except Exception as e:
             logger.error("Send code failed for tenant %d: %s", tenant_id, e)
@@ -220,6 +222,9 @@ class TelegramClientFactory:
         client = self._clients.get(tenant_id)
         if not client:
             return {"error": "Client not found"}
+
+        if not phone_code_hash:
+            phone_code_hash = self._phone_code_hashes.get(tenant_id)
 
         try:
             await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
