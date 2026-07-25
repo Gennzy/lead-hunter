@@ -6,7 +6,10 @@ import time
 import random
 from typing import Optional
 from openai import AsyncOpenAI
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    genai = None
 from config import settings, KEYWORDS, NOISE_KEYWORDS
 
 logger = logging.getLogger(__name__)
