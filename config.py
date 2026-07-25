@@ -73,6 +73,8 @@ class Settings(BaseSettings):
 
     monitored_chats: str = ""
 
+    mt_proxy: str = ""
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
