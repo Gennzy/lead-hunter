@@ -10,6 +10,7 @@ from typing import Optional
 
 from telethon import TelegramClient, connection
 from sqlalchemy import select, update
+import socks
 
 from app.models import TelegramSession, Tenant, async_session
 from config import settings
@@ -104,16 +105,16 @@ class TelegramClientFactory:
         api_id, api_hash = self._get_api_credentials(tenant_config)
 
         client_kwargs = {}
-        env_proxy = settings.mt_proxy.strip()
-        if env_proxy:
-            parts = env_proxy.split(":")
-            if len(parts) == 3:
-                try:
-                    client_kwargs["proxy"] = (parts[0], int(parts[1]), parts[2])
-                    client_kwargs["connection"] = connection.ConnectionTcpMTProxyRandomizedIntermediate
-                    logger.info("MTProxy configured: %s:%s", parts[0], parts[1])
-                except Exception as e:
-                    logger.error("Failed to parse MT_PROXY '%s': %s", env_proxy, e)
+        if settings.socks5_proxy_host and settings.socks5_proxy_port:
+            client_kwargs["proxy"] = (
+                socks.SOCKS5,
+                settings.socks5_proxy_host,
+                int(settings.socks5_proxy_port),
+                True,
+                settings.socks5_proxy_user,
+                settings.socks5_proxy_pass,
+            )
+            logger.info("SOCKS5 proxy configured: %s:%s", settings.socks5_proxy_host, settings.socks5_proxy_port)
 
         client = TelegramClient(secure_path, int(api_id), api_hash, **client_kwargs)
         self._clients[tenant_id] = client

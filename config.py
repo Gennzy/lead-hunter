@@ -75,6 +75,11 @@ class Settings(BaseSettings):
 
     mt_proxy: str = ""
 
+    socks5_proxy_host: str = ""
+    socks5_proxy_port: int = 0
+    socks5_proxy_user: str = ""
+    socks5_proxy_pass: str = ""
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
