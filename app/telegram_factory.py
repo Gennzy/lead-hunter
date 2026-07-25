@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from telethon import TelegramClient
+from telethon import TelegramClient, connection
 from sqlalchemy import select, update
 
 from app.models import TelegramSession, Tenant, async_session
@@ -101,8 +101,22 @@ class TelegramClientFactory:
         # Always use secure path from tenant_id, ignore user-provided session_name
         secure_path = _get_session_path(tenant_id)
 
-            api_id, api_hash = self._get_api_credentials(tenant_config)
-            client = TelegramClient(secure_path, int(api_id), api_hash, use_ipv6=True)
+        api_id, api_hash = self._get_api_credentials(tenant_config)
+
+        proxy = None
+        env_proxy = os.environ.get("MT_PROXY", "").strip()
+        if env_proxy:
+            parts = env_proxy.split(":")
+            if len(parts) == 3:
+                proxy = (connection.ConnectionTcpMTProxyRandomizedIntermediate,
+                         parts[0], int(parts[1]), bytes.fromhex(parts[2]))
+
+        client_kwargs = {}
+        if proxy:
+            client_kwargs["proxy"] = proxy
+            client_kwargs["connection"] = proxy[0]
+
+        client = TelegramClient(secure_path, int(api_id), api_hash, **client_kwargs)
         self._clients[tenant_id] = client
 
         # Restrict permissions on session file after creation
