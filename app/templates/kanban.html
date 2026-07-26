@@ -29,7 +29,17 @@
         <div class="kanban-cards" data-status="{{ status }}">
             {% for lead in leads if lead.status == status %}
             <div class="kanban-card" draggable="true" data-id="{{ lead.id }}" data-status="{{ lead.status }}"
-                 data-lead="{{ {'id':lead.id,'name':(lead.first_name or lead.username or 'Лид #'~lead.id),'score':lead.lead_score|int,'urgency':lead.urgency,'chat':lead.chat_title,'msg':(lead.message_text or '')[:300],'date':lead.created_at.strftime('%d.%m.%Y %H:%M') if lead.created_at else '','reason':(lead.reason or ''),'status':lead.status_label(),'username':(lead.username or ''),'user_id':(lead.user_id or ''),'profile':lead.profile_url()}|tojson|e }}">
+                 data-name="{{ (lead.first_name or lead.username or 'Лид #'~lead.id)[:30]|e }}"
+                 data-score="{{ lead.lead_score|int }}"
+                 data-urgency="{{ lead.urgency }}"
+                 data-chat="{{ (lead.chat_title or '')[:50]|e }}"
+                 data-msg="{{ (lead.message_text or '')[:300]|e }}"
+                 data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') if lead.created_at else '' }}"
+                 data-reason="{{ (lead.reason or '')|e }}"
+                 data-status-label="{{ lead.status_label()|e }}"
+                 data-username="{{ (lead.username or '')|e }}"
+                 data-userid="{{ lead.user_id or '' }}"
+                 data-profile="{{ lead.profile_url() }}">
                 <div class="kanban-card-name">{{ (lead.first_name or lead.username or 'Лид #' ~ lead.id)[:25] }}</div>
                 <div class="kanban-card-meta">
                     <span class="kanban-card-score" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
@@ -124,9 +134,9 @@
         var card = e.target.closest('.kanban-card');
         if (!card || card.classList.contains('dragging')) return;
         try {
-            var data = JSON.parse(card.dataset.lead);
+            var ds = card.dataset;
+            var data = {id:ds.id, name:ds.name, score:parseInt(ds.score), urgency:ds.urgency, chat:ds.chat, msg:ds.msg, date:ds.date, reason:ds.reason, status:ds.statusLabel, username:ds.username, user_id:ds.userid, profile:ds.profile};
             var urgencyLabel = {high:'🔥 Высокая',medium:'⚡ Средняя',low:'💤 Низкая'};
-            var statusColors = {new:'var(--info)',contacted:'var(--warning)',interested:'var(--success)',deal:'#16a34a',not_interested:'var(--danger)'};
             document.getElementById('modalTitle').textContent = 'Лид #' + data.id + ' — ' + data.name;
             var html = '<div style="display:flex;flex-direction:column;gap:12px">';
             html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
