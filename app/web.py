@@ -195,11 +195,12 @@ async def login_submit(
         return RedirectResponse("/login?error=Неверный логин или пароль", status_code=303)
 
     async with async_session() as session:
-        await ActionLogRepository(session, user.tenant_id).log(
-            user.id, "login",
-            meta={"ip": request.client.host if request.client else None},
-        )
-        await session.commit()
+        if user.tenant_id:
+            await ActionLogRepository(session, user.tenant_id).log(
+                user.id, "login",
+                meta={"ip": request.client.host if request.client else None},
+            )
+            await session.commit()
 
     if user.must_change_password:
         token = create_token(user.id, user.tenant_id)
