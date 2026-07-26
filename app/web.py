@@ -2392,7 +2392,7 @@ async def api_template_generate(request: Request):
                 if text.endswith("```"):
                     text = text.rsplit("```", 1)[0]
                 text = text.strip()
-                parsed = json.loads(text)
+                parsed = json.loads(text, strict=False)
                 return HTMLResponse(
                     content=json.dumps({"name": parsed.get("name", ""), "body": parsed.get("body", "")}),
                     media_type="application/json",
