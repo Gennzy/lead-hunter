@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, Form, Query, HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, and_, update, case
@@ -1230,6 +1230,176 @@ async def activity_page(
     return templates.TemplateResponse(request, "activity.html", ctx)
 
 
+@app.get("/activity/pdf")
+async def activity_pdf(
+    request: Request,
+    days: int = Query(7, ge=1, le=90),
+    user_id: int = Query(None),
+):
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+    since = datetime.utcnow() - timedelta(days=days)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        all_users = await users_repo.list_active()
+        user_map = {u.id: u for u in all_users}
+
+        sla_hours = 4
+        if tenant_id is not None:
+            tenant_repo = TenantRepository(session)
+            tenant = await tenant_repo.get_by_id(tenant_id)
+            if tenant and tenant.config:
+                sla_hours = tenant.config.get("sla_hours", 4)
+
+        action_log = ActionLogRepository(session, tenant_id)
+        summary = await action_log.get_summary_by_user(since)
+        timeline = await action_log.get_timeline(since, user_id=user_id, limit=200)
+        anomalies = await action_log.get_write_then_no_status_change(since, hours=sla_hours)
+        median_data = await action_log.get_median_time_to_first_action(since)
+
+    from fpdf import FPDF
+    import io
+
+    font_path = str(Path(__file__).parent / "fonts" / "DejaVuSans.ttf")
+    bold_path = str(Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf")
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    if Path(font_path).exists():
+        pdf.add_font("DejaVu", "", font_path, uni=True)
+        pdf.add_font("DejaVu", "B", bold_path, uni=True)
+        pdf.set_font("DejaVu", "", 10)
+    else:
+        pdf.set_font("Helvetica", "", 10)
+
+    pdf.add_page()
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "B", 16)
+    else:
+        pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, f"Audit Report — {days} days", ln=True)
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "", 9)
+    else:
+        pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ln=True)
+    if user_id and user_id in user_map:
+        u = user_map[user_id]
+        pdf.cell(0, 6, f"Employee: {u.full_name or u.username}", ln=True)
+    else:
+        pdf.cell(0, 6, "Employees: all", ln=True)
+    pdf.ln(5)
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "B", 12)
+    else:
+        pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Summary", ln=True)
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "B", 9)
+    else:
+        pdf.set_font("Helvetica", "B", 9)
+
+    col_w = [45, 30, 18, 22, 25, 30]
+    headers = ["Employee", "Last login", "Login", "Write", "Status", "Median"]
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 7, h, border=1, align="C")
+    pdf.ln()
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "", 9)
+    else:
+        pdf.set_font("Helvetica", "", 9)
+
+    for u in all_users:
+        s = summary.get(u.id, {})
+        m = median_data.get(u.id, {})
+        name = (u.full_name or u.username or "")[:20]
+        last_login = s.last_login.strftime("%d.%m %H:%M") if hasattr(s, "last_login") and s.get("last_login") else "-"
+        login_count = str(s.get("login_count", 0))
+        write_count = str(s.get("click_write_count", 0))
+        status_count = str(s.get("status_change_count", 0))
+        median_str = f"{m['median_hours']}h ({m['count']})" if m else "-"
+
+        vals = [name, last_login, login_count, write_count, status_count, median_str]
+        for i, v in enumerate(vals):
+            pdf.cell(col_w[i], 7, v, border=1, align="C" if i > 0 else "L")
+        pdf.ln()
+
+    pdf.ln(5)
+
+    if anomalies:
+        if Path(font_path).exists():
+            pdf.set_font("DejaVu", "B", 12)
+        else:
+            pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, f"Anomalies ({len(anomalies)})", ln=True)
+
+        if Path(font_path).exists():
+            pdf.set_font("DejaVu", "", 9)
+        else:
+            pdf.set_font("Helvetica", "", 9)
+
+        for a in anomalies[:50]:
+            u = user_map.get(a.user_id)
+            name = (u.full_name or u.username or f"ID:{a.user_id}") if u else f"ID:{a.user_id}"
+            t = a.created_at.strftime("%d.%m %H:%M")
+            pdf.cell(0, 6, f"{t}  {name}  Lead #{a.lead_id}  — no status change {sla_hours}h+", ln=True)
+
+        pdf.ln(5)
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "B", 12)
+    else:
+        pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, f"Timeline (last {len(timeline)} entries)", ln=True)
+
+    if Path(font_path).exists():
+        pdf.set_font("DejaVu", "", 8)
+    else:
+        pdf.set_font("Helvetica", "", 8)
+
+    for entry in timeline[:300]:
+        t = entry.created_at.strftime("%d.%m %H:%M")
+        u = user_map.get(entry.user_id)
+        name = (u.full_name or u.username or f"ID:{entry.user_id}") if u else f"ID:{entry.user_id}"
+
+        if entry.action_type == "login":
+            action = "logged in"
+        elif entry.action_type == "click_write":
+            action = f"clicked Write — Lead #{entry.lead_id}" if entry.lead_id else "clicked Write"
+        elif entry.action_type == "status_change":
+            fr = entry.meta.get("from", "?") if entry.meta else "?"
+            to = entry.meta.get("to", "?") if entry.meta else "?"
+            action = f"status: {fr} -> {to} — Lead #{entry.lead_id}" if entry.lead_id else f"status: {fr} -> {to}"
+        elif entry.action_type == "ai_request":
+            action = "AI request"
+        else:
+            action = entry.action_type
+
+        line = f"{t}  {name[:18]}  {action}"
+        pdf.cell(0, 5, line, ln=True)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+
+    filename = f"activity_report_{days}d_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/franchisor", response_class=HTMLResponse)
 async def franchisor_page(request: Request):
     user = await get_current_user(request)
@@ -1921,7 +2091,7 @@ async def update_billing_settings(
                 "max_leads_per_month": max_leads_per_month,
                 "ai_enabled": ai_enabled,
             })
-            await tenant_repo.update(tenant_id, config=config)
+            await tenant_repo.update_config(tenant_id, config=config)
             await session.commit()
 
     return RedirectResponse("/billing?success=Billing settings updated", status_code=303)

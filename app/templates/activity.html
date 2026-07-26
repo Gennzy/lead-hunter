@@ -24,6 +24,7 @@
                 {% endfor %}
             </select>
         </div>
+        <a href="/activity/pdf?days={{ days }}{% if selected_user_id %}&user_id={{ selected_user_id }}{% endif %}" class="btn btn-outline btn-sm" style="text-decoration:none" download>📥 PDF</a>
     </div>
 </div>
 
