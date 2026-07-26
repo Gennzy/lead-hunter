@@ -84,6 +84,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
                 <span>Франчайзи</span>
             </a>
+            <a href="/activity" class="nav-item {% if '/activity' in request.url.path %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+                <span>Активность</span>
+            </a>
             {% endif %}
             {% endif %}
         </nav>
@@ -104,6 +108,16 @@
     <main class="main">
         {% block content %}{% endblock %}
     </main>
+
+    {% if user and not user.notified_about_logging and user.role != 'super_admin' %}
+    <div id="loggingModal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+        <div style="background:#fff;border-radius:12px;padding:28px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+            <h3 style="margin-bottom:12px;font-size:18px">Уведомление о логировании</h3>
+            <p style="font-size:14px;color:#57534e;line-height:1.6;margin-bottom:20px">Система логирует действия пользователей (входы, работу с лидами) в целях контроля SLA и качества обработки заявок.</p>
+            <button onclick="fetch('/dismiss-logging-notice',{method:'POST'}).then(function(){document.getElementById('loggingModal').remove()})" style="width:100%;padding:10px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Понятно</button>
+        </div>
+    </div>
+    {% endif %}
 
     <script>
     function toggleSidebar() {

@@ -17,7 +17,7 @@ from app.models import Lead, User, LeadHistory, BlacklistedUser, Base, engine, a
 from app.repositories import (
     TenantRepository, UserRepository, LeadRepository,
     LeadHistoryRepository, BlacklistedUserRepository, TelegramSessionRepository,
-    TenantUsageRepository,
+    TenantUsageRepository, ActionLogRepository,
 )
 from app.config_manager import TenantConfig
 from app.auth import (
@@ -193,6 +193,13 @@ async def login_submit(
     if not user or not verify_password(password, user.password_hash):
         return RedirectResponse("/login?error=Неверный логин или пароль", status_code=303)
 
+    async with async_session() as session:
+        await ActionLogRepository(session, user.tenant_id).log(
+            user.id, "login",
+            meta={"ip": request.client.host if request.client else None},
+        )
+        await session.commit()
+
     if user.must_change_password:
         token = create_token(user.id, user.tenant_id)
         response = RedirectResponse("/change-password", status_code=303)
@@ -257,6 +264,19 @@ async def logout():
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+@app.post("/dismiss-logging-notice")
+async def dismiss_logging_notice(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.id == user.id))
+        db_user = result.scalar_one()
+        db_user.notified_about_logging = True
+        await session.commit()
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -534,6 +554,31 @@ async def lead_feedback(request: Request, lead_id: int, feedback: str = Form(...
     return RedirectResponse(f"/leads/{lead_id}", status_code=303)
 
 
+@app.post("/leads/{lead_id}/log-write-click")
+async def log_write_click(request: Request, lead_id: int):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        lead = await leads.get_by_id(lead_id)
+        if not lead:
+            raise HTTPException(status_code=404)
+
+        if user.role == "manager" and lead.assigned_to != user.id:
+            raise HTTPException(status_code=403)
+
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "click_write", lead_id=lead_id,
+        )
+        await session.commit()
+
+    return {"ok": True}
+
+
 @app.get("/archive", response_class=HTMLResponse)
 async def archive_list(
     request: Request,
@@ -700,6 +745,10 @@ async def update_status(
             new_value=lead_status,
             note=f"{user.full_name or user.username} изменил статус",
         )
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "status_change", lead_id=lead_id,
+            meta={"from": old_status, "to": lead_status},
+        )
         await session.commit()
     return RedirectResponse(f"/leads/{lead_id}", status_code=303)
 
@@ -782,6 +831,7 @@ async def leads_bulk_action(
 
         history = LeadHistoryRepository(session, tenant_id)
         bl = BlacklistedUserRepository(session, tenant_id)
+        action_log = ActionLogRepository(session, tenant_id)
 
         if action == "delete":
             for lid in valid_ids:
@@ -802,6 +852,7 @@ async def leads_bulk_action(
                     new_value="deleted",
                     note=f"{user.full_name or user.username} (массовое удаление)",
                 )
+                await action_log.log(user.id, "status_change", lead_id=lid, meta={"from": old, "to": "deleted"})
         elif action in ("new", "contacted", "interested", "not_interested", "deal", "archive", "deleted"):
             for lid in valid_ids:
                 lead_obj = await leads.get_by_id(lid)
@@ -815,6 +866,7 @@ async def leads_bulk_action(
                     new_value=action,
                     note=f"{user.full_name or user.username} (массовое)",
                 )
+                await action_log.log(user.id, "status_change", lead_id=lid, meta={"from": old, "to": action})
         await session.commit()
     return RedirectResponse("/leads", status_code=303)
 
@@ -1126,6 +1178,40 @@ async def team_page(request: Request):
 
     ctx = await _template_ctx(user, team_data=team_data, total_team_leads=total_team_leads, total_deals=total_deals)
     return templates.TemplateResponse(request, "team.html", ctx)
+
+
+@app.get("/activity", response_class=HTMLResponse)
+async def activity_page(
+    request: Request,
+    days: int = Query(7, ge=1, le=90),
+    user_id: int = Query(None),
+):
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+    since = datetime.utcnow() - timedelta(days=days)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        all_users = await users_repo.list_active()
+        user_map = {u.id: u for u in all_users}
+
+        action_log = ActionLogRepository(session, tenant_id)
+        summary = await action_log.get_summary_by_user(since)
+        timeline = await action_log.get_timeline(since, user_id=user_id, limit=200)
+        anomalies = await action_log.get_write_then_no_status_change(since, hours=4)
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(
+        current_user,
+        all_users=all_users, user_map=user_map,
+        summary=summary, timeline=timeline, anomalies=anomalies,
+        days=days, selected_user_id=user_id,
+        csrf_token=csrf,
+    )
+    return templates.TemplateResponse(request, "activity.html", ctx)
 
 
 @app.get("/franchisor", response_class=HTMLResponse)

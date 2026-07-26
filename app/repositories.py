@@ -8,7 +8,7 @@ from sqlalchemy import select, func as sa_func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage,
+    Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage, ActionLog,
 )
 
 ModelType = TypeVar("ModelType")
@@ -603,3 +603,106 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
             )
         )
         return result.scalar() or 0.0
+
+
+class ActionLogRepository(BaseRepository[ActionLog]):
+    model = ActionLog
+
+    async def log(self, user_id: int, action_type: str, lead_id: int | None = None, meta: dict | None = None):
+        entry = ActionLog(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            lead_id=lead_id,
+            action_type=action_type,
+            meta=meta,
+        )
+        self.session.add(entry)
+        await self.session.flush()
+
+    async def get_timeline(self, since: datetime, user_id: int | None = None, limit: int = 200):
+        filters = [ActionLog.created_at >= since]
+        if self.tenant_id is not None:
+            filters.append(ActionLog.tenant_id == self.tenant_id)
+        if user_id is not None:
+            filters.append(ActionLog.user_id == user_id)
+        result = await self.session.execute(
+            select(ActionLog)
+            .where(*filters)
+            .order_by(ActionLog.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_summary_by_user(self, since: datetime):
+        filters = [ActionLog.created_at >= since]
+        if self.tenant_id is not None:
+            filters.append(ActionLog.tenant_id == self.tenant_id)
+
+        from sqlalchemy import case as sa_case
+        login_cnt = sa_func.count(sa_case((ActionLog.action_type == "login", 1)))
+        click_cnt = sa_func.count(sa_case((ActionLog.action_type == "click_write", 1)))
+        status_cnt = sa_func.count(sa_case((ActionLog.action_type == "status_change", 1)))
+
+        q = (
+            select(
+                ActionLog.user_id,
+                login_cnt.label("login_count"),
+                click_cnt.label("click_write_count"),
+                status_cnt.label("status_change_count"),
+            )
+            .where(*filters)
+            .group_by(ActionLog.user_id)
+        )
+        rows = (await self.session.execute(q)).fetchall()
+
+        result = {}
+        for row in rows:
+            last_login_q = (
+                select(sa_func.max(ActionLog.created_at))
+                .where(
+                    ActionLog.user_id == row.user_id,
+                    ActionLog.action_type == "login",
+                )
+            )
+            if self.tenant_id is not None:
+                last_login_q = last_login_q.where(ActionLog.tenant_id == self.tenant_id)
+            last_login = (await self.session.execute(last_login_q)).scalar()
+
+            result[row.user_id] = {
+                "login_count": row.login_count,
+                "click_write_count": row.click_write_count,
+                "status_change_count": row.status_change_count,
+                "last_login": last_login,
+            }
+
+        return result
+
+    async def get_write_then_no_status_change(self, since: datetime, hours: int = 4):
+        """Find click_write events where no status_change followed within N hours for same lead."""
+        filters = [
+            ActionLog.created_at >= since,
+            ActionLog.action_type == "click_write",
+            ActionLog.lead_id.isnot(None),
+        ]
+        if self.tenant_id is not None:
+            filters.append(ActionLog.tenant_id == self.tenant_id)
+
+        writes = (await self.session.execute(
+            select(ActionLog).where(*filters).order_by(ActionLog.created_at.desc()).limit(200)
+        )).scalars().all()
+
+        anomalies = []
+        for w in writes:
+            status_q = select(sa_func.count(ActionLog.id)).where(
+                ActionLog.lead_id == w.lead_id,
+                ActionLog.action_type == "status_change",
+                ActionLog.created_at > w.created_at,
+                ActionLog.created_at <= w.created_at + timedelta(hours=hours),
+            )
+            if self.tenant_id is not None:
+                status_q = status_q.where(ActionLog.tenant_id == self.tenant_id)
+            count = (await self.session.execute(status_q)).scalar() or 0
+            if count == 0:
+                anomalies.append(w)
+
+        return anomalies

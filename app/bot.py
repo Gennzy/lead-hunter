@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select, update
 from app.models import Lead, Tenant, async_session
 from app.config_manager import TenantConfig
+from app.repositories import ActionLogRepository
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,10 @@ async def cb_archive(callback: CallbackQuery):
         await session.execute(
             update(Lead).where(Lead.id == lead_id).values(status="archive")
         )
+        await ActionLogRepository(session, lead.tenant_id).log(
+            callback.from_user.id, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "archive"},
+        )
         await session.commit()
     await callback.answer("📦 Архивировано")
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -176,6 +181,10 @@ async def cb_not_lead(callback: CallbackQuery):
             return
         await session.execute(
             update(Lead).where(Lead.id == lead_id).values(status="not_interested")
+        )
+        await ActionLogRepository(session, lead.tenant_id).log(
+            callback.from_user.id, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "not_interested"},
         )
         await session.commit()
     await callback.answer("❌ Не лид")
@@ -199,6 +208,10 @@ async def cb_contacted(callback: CallbackQuery):
         await session.execute(
             update(Lead).where(Lead.id == lead_id).values(status="contacted")
         )
+        await ActionLogRepository(session, lead.tenant_id).log(
+            callback.from_user.id, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "contacted"},
+        )
         await session.commit()
     await callback.answer("✅ Контактировали")
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -220,6 +233,10 @@ async def cb_deal(callback: CallbackQuery):
             return
         await session.execute(
             update(Lead).where(Lead.id == lead_id).values(status="deal")
+        )
+        await ActionLogRepository(session, lead.tenant_id).log(
+            callback.from_user.id, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "deal"},
         )
         await session.commit()
     await callback.answer("🤝 Сделка!")

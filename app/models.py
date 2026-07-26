@@ -65,6 +65,7 @@ class User(Base):
     role = Column(String(20), default="viewer")  # super_admin | admin | manager | viewer
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    notified_about_logging = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
@@ -212,3 +213,19 @@ class TenantUsage(Base):
     model_used = Column(String(100), nullable=True)
     cost_usd = Column(Float, default=0.0)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ActionLog(Base):
+    __tablename__ = "action_logs"
+    __table_args__ = (
+        Index("ix_action_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_action_logs_tenant_user_created", "tenant_id", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True, index=True)
+    action_type = Column(String(50), nullable=False)
+    meta = Column(_JSONType, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
