@@ -37,9 +37,12 @@
                     <th style="text-align:left;padding:8px 10px;font-weight:600">Сотрудник</th>
                     <th style="text-align:left;padding:8px 10px;font-weight:600">Последний вход</th>
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Входов</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Просмотров</th>
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Написать</th>
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Смен статуса</th>
-                    <th style="text-align:center;padding:8px 10px;font-weight:600">Медиана до действия</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Профилей</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Экспортов</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Медиана</th>
                 </tr>
             </thead>
             <tbody>
@@ -50,10 +53,21 @@
                     <td style="padding:8px 10px">
                         <a href="/activity?days={{ days }}&user_id={{ u.id }}" style="color:var(--primary);text-decoration:none;font-weight:500">{{ u.full_name or u.username }}</a>
                     </td>
-                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ s.last_login.strftime('%d.%m %H:%M') if s.get('last_login') else '—' }}</td>
+                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ s.get('last_login').strftime('%d.%m %H:%M') if s.get('last_login') else '—' }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('login_count', 0) }}</td>
+                    <td style="padding:8px 10px;text-align:center">{{ s.get('lead_view_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('click_write_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('status_change_count', 0) }}</td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if s.get('profile_click_count', 0) > 0 %}
+                        <span style="color:var(--danger);font-weight:600">{{ s.get('profile_click_count', 0) }}</span>
+                        {% else %}{{ s.get('profile_click_count', 0) }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if s.get('csv_export_count', 0) > 0 %}
+                        <span style="color:var(--warning);font-weight:600">{{ s.get('csv_export_count', 0) }}</span>
+                        {% else %}{{ s.get('csv_export_count', 0) }}{% endif %}
+                    </td>
                     <td style="padding:8px 10px;text-align:center">
                         {% if m %}
                         <span style="font-weight:600;{% if m.median_hours < 1 %}color:#16a34a{% elif m.median_hours < 4 %}color:#d97706{% else %}color:#dc2626{% endif %}">{{ m.median_hours }} ч</span>
@@ -65,6 +79,7 @@
             </tbody>
         </table>
     </div>
+    <p style="color:var(--text-muted);font-size:11px;margin-top:8px">🔥 Профилей — клики на Telegram профили (возможная утечка лидов). Экспортов — скачивание CSV.</p>
 </div>
 
 {% if anomalies %}
@@ -107,6 +122,23 @@
                     {% endif %}
                     {% if entry.meta %}
                     <span style="color:var(--text-secondary)">{{ entry.meta.get('from', '?') }} → {{ entry.meta.get('to', '?') }}</span>
+                    {% endif %}
+                {% elif entry.action_type == 'lead_view' %}
+                    <span style="color:#8b5cf6">просмотрел лид</span>
+                    {% if entry.lead_id %}
+                    — <a href="/leads/{{ entry.lead_id }}" style="color:var(--primary)">Лид #{{ entry.lead_id }}</a>
+                    {% endif %}
+                {% elif entry.action_type == 'profile_click' %}
+                    <span style="color:#dc2626">открыл Telegram профиль</span>
+                    {% if entry.lead_id %}
+                    — <a href="/leads/{{ entry.lead_id }}" style="color:var(--primary)">Лид #{{ entry.lead_id }}</a>
+                    {% endif %}
+                {% elif entry.action_type == 'csv_export' %}
+                    <span style="color:#d97706">скачал CSV экспорт</span>
+                {% elif entry.action_type == 'auto_assign' %}
+                    <span style="color:var(--text-muted)">авто-назначен</span>
+                    {% if entry.lead_id %}
+                    — <a href="/leads/{{ entry.lead_id }}" style="color:var(--primary)">Лид #{{ entry.lead_id }}</a>
                     {% endif %}
                 {% endif %}
             </div>

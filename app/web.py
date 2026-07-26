@@ -520,6 +520,15 @@ async def leads_export_csv(
         return RedirectResponse("/login", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
+
+    # Log CSV export (anti-theft)
+    async with async_session() as session:
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "csv_export", meta={"filters": {"status": lead_status, "chat": chat}},
+        )
+        await session.commit()
+
+    tenant_id = await _get_tenant_id(user)
     manager_id = user.id if user.role == "manager" else None
 
     async with async_session() as session:
@@ -622,6 +631,12 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
 
         if user.role == "manager" and lead.assigned_to != user.id:
             return RedirectResponse("/leads", status_code=303)
+
+        # Log lead view (anti-theft)
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "lead_view", lead_id=lead_id,
+            meta={"chat": lead.chat_title, "score": lead.lead_score},
+        )
 
         assignee = None
         if lead.assigned_to:
@@ -2380,3 +2395,18 @@ async def webhook_delete(request: Request, webhook_id: int, csrf_token: str = Fo
             wh.is_active = False
             await session.commit()
     return RedirectResponse("/webhooks?success=Вебхук+удалён", status_code=303)
+
+
+@app.get("/api/log-profile-click/{lead_id}")
+async def log_profile_click(request: Request, lead_id: int):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "profile_click", lead_id=lead_id,
+            meta={"ip": request.client.host if request.client else None},
+        )
+        await session.commit()
+    raise HTTPException(status_code=200)

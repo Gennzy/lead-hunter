@@ -652,6 +652,9 @@ class ActionLogRepository(BaseRepository[ActionLog]):
         login_cnt = sa_func.count(sa_case((ActionLog.action_type == "login", 1)))
         click_cnt = sa_func.count(sa_case((ActionLog.action_type == "click_write", 1)))
         status_cnt = sa_func.count(sa_case((ActionLog.action_type == "status_change", 1)))
+        view_cnt = sa_func.count(sa_case((ActionLog.action_type == "lead_view", 1)))
+        profile_cnt = sa_func.count(sa_case((ActionLog.action_type == "profile_click", 1)))
+        export_cnt = sa_func.count(sa_case((ActionLog.action_type == "csv_export", 1)))
         last_login = sa_func.max(sa_case((ActionLog.action_type == "login", ActionLog.created_at), else_=None))
 
         q = (
@@ -660,6 +663,9 @@ class ActionLogRepository(BaseRepository[ActionLog]):
                 login_cnt.label("login_count"),
                 click_cnt.label("click_write_count"),
                 status_cnt.label("status_change_count"),
+                view_cnt.label("lead_view_count"),
+                profile_cnt.label("profile_click_count"),
+                export_cnt.label("csv_export_count"),
                 last_login.label("last_login"),
             )
             .where(*filters)
@@ -672,6 +678,9 @@ class ActionLogRepository(BaseRepository[ActionLog]):
                 "login_count": row.login_count,
                 "click_write_count": row.click_write_count,
                 "status_change_count": row.status_change_count,
+                "lead_view_count": row.lead_view_count,
+                "profile_click_count": row.profile_click_count,
+                "csv_export_count": row.csv_export_count,
                 "last_login": row.last_login,
             }
             for row in rows

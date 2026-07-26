@@ -2,7 +2,7 @@
 {% block title %}Канбан — Lead Hunter{% endblock %}
 {% block content %}
 <h1>Канбан-доска</h1>
-<p class="subtitle">Перетаскивайте лиды между статусами</p>
+<p class="subtitle">Перетаскивайте лиды между статусами. Клик — подробности.</p>
 
 <style>
 .kanban-board{display:flex;gap:16px;overflow-x:auto;padding-bottom:16px;min-height:70vh}
@@ -28,10 +28,9 @@
         </div>
         <div class="kanban-cards" data-status="{{ status }}">
             {% for lead in leads if lead.status == status %}
-            <div class="kanban-card" draggable="true" data-id="{{ lead.id }}" data-status="{{ lead.status }}">
-                <div class="kanban-card-name">
-                    <a href="/leads/{{ lead.id }}" style="color:var(--text);text-decoration:none">{{ (lead.first_name or lead.username or 'Лид #' ~ lead.id)[:25] }}</a>
-                </div>
+            <div class="kanban-card" draggable="true" data-id="{{ lead.id }}" data-status="{{ lead.status }}"
+                 data-lead="{{ {'id':lead.id,'name':(lead.first_name or lead.username or 'Лид #'~lead.id),'score':lead.lead_score|int,'urgency':lead.urgency,'chat':lead.chat_title,'msg':(lead.message_text or '')[:300],'date':lead.created_at.strftime('%d.%m.%Y %H:%M') if lead.created_at else '','reason':(lead.reason or ''),'status':lead.status_label(),'username':(lead.username or ''),'user_id':(lead.user_id or ''),'profile':lead.profile_url()}|tojson|e }}">
+                <div class="kanban-card-name">{{ (lead.first_name or lead.username or 'Лид #' ~ lead.id)[:25] }}</div>
                 <div class="kanban-card-meta">
                     <span class="kanban-card-score" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
                     <span class="urgency-badge urgency-{{ lead.urgency }}" style="font-size:10px;padding:1px 5px">
@@ -46,15 +45,27 @@
     {% endfor %}
 </div>
 
+<div id="leadModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:520px">
+        <div class="modal-header">
+            <h3 id="modalTitle">&nbsp;</h3>
+            <button class="modal-close" onclick="document.getElementById('leadModal').style.display='none'">&times;</button>
+        </div>
+        <div id="modalBody" style="padding:20px 24px"></div>
+    </div>
+</div>
+
 <script>
 (function(){
     var board = document.getElementById('kanbanBoard');
     var draggedCard = null;
+    var dragStartTime = 0;
 
     board.addEventListener('dragstart', function(e){
         var card = e.target.closest('.kanban-card');
         if (!card) return;
         draggedCard = card;
+        dragStartTime = Date.now();
         card.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', card.dataset.id);
@@ -106,6 +117,36 @@
                 showToast('Ошибка', 'error');
             }
         }).catch(function(){ showToast('Ошибка сети', 'error'); });
+    });
+
+    board.addEventListener('click', function(e){
+        if (Date.now() - dragStartTime < 200) return;
+        var card = e.target.closest('.kanban-card');
+        if (!card || card.classList.contains('dragging')) return;
+        try {
+            var data = JSON.parse(card.dataset.lead);
+            var urgencyLabel = {high:'🔥 Высокая',medium:'⚡ Средняя',low:'💤 Низкая'};
+            var statusColors = {new:'var(--info)',contacted:'var(--warning)',interested:'var(--success)',deal:'#16a34a',not_interested:'var(--danger)'};
+            document.getElementById('modalTitle').textContent = 'Лид #' + data.id + ' — ' + data.name;
+            var html = '<div style="display:flex;flex-direction:column;gap:12px">';
+            html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+            html += '<span class="score-badge" style="background:' + (data.score>=90?'#c45a5a':data.score>=80?'#c49a3c':data.score>=70?'#5a8f8f':'#5a8f6a') + ';font-size:14px;padding:3px 10px">' + data.score + '</span>';
+            html += '<span class="urgency-badge urgency-' + data.urgency + '">' + (urgencyLabel[data.urgency]||data.urgency) + '</span>';
+            html += '<span class="status-badge status-' + data.status + '">' + data.status + '</span>';
+            html += '</div>';
+            html += '<div><b>Чат:</b> ' + (data.chat||'—') + '</div>';
+            if (data.username) html += '<div><b>Username:</b> <a href="' + data.profile + '" target="_blank">@' + data.username + '</a></div>';
+            if (data.user_id) html += '<div><b>User ID:</b> ' + data.user_id + '</div>';
+            html += '<div><b>Дата:</b> ' + (data.date||'—') + '</div>';
+            if (data.reason) html += '<div><b>Причина:</b> ' + data.reason + '</div>';
+            html += '<div style="background:var(--bg-subtle);padding:12px;border-radius:8px;font-size:13px;line-height:1.5"><b>Сообщение:</b><br>' + (data.msg||'—').replace(/</g,'&lt;') + '</div>';
+            html += '<div style="display:flex;gap:8px;margin-top:4px">';
+            html += '<a href="/leads/' + data.id + '" class="btn btn-primary btn-sm">Открыть полностью</a>';
+            html += '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'leadModal\').style.display=\'none\'">Закрыть</button>';
+            html += '</div></div>';
+            document.getElementById('modalBody').innerHTML = html;
+            document.getElementById('leadModal').style.display = 'flex';
+        } catch(ex) {}
     });
 })();
 </script>
