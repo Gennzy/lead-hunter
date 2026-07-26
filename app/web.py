@@ -2318,22 +2318,48 @@ async def api_template_generate(request: Request):
 
     category_labels = {
         "general": "общий",
-        "first_contact": "первый контакт с клиентом",
+        "first_contact": "проактивный первый контакт — мы сами пишем клиенту",
         "follow_up": "повторное напоминание / follow-up",
         "deal_close": "закрытие сделки / договорённость",
     }
     cat_label = category_labels.get(category, category)
 
+    tenant_id = await _get_tenant_id(user)
+    existing_examples = ""
+    try:
+        async with async_session() as session:
+            repo = MessageTemplateRepository(session, tenant_id)
+            all_tmpls = await repo.list_active()
+            if all_tmpls:
+                examples = []
+                for t in all_tmpls[:8]:
+                    examples.append(f"[{t.category}] {t.name}:\n{t.body[:300]}")
+                existing_examples = "\n\nУЖЕ СУЩЕСТВУЮЩИЕ ШАБЛОНЫ (учти стиль при генерации новых):\n" + "\n---\n".join(examples)
+    except Exception:
+        pass
+
     prompt = (
-        "Ты — копирайтер компании по ремонту квартир. "
-        "Создай короткий шаблон сообщения для Telegram.\n\n"
+        "Ты — копирайтер компании по ремонту квартир в Москве.\n\n"
+        "ВАЖНО: Мы — компания по ремонту. Мы МОНИТОРИМ Telegram-чаты и находим людей, "
+        "которые ищут ремонт или задают вопросы про ремонт. Мы ПЕРВЫЕ пишем им предложение услуг.\n"
+        "Клиент НЕ обращался к нам — это МЫ выходим на него.\n\n"
         f"Категория: {cat_label}\n"
         f"Описание: {description}\n"
     )
     if context:
-        prompt += f"Контекст: {context}\n"
+        prompt += f"Дополнительный контекст: {context}\n"
+    prompt += existing_examples
     prompt += (
-        "\nВерни ТОЛЬКО JSON без markdown без кодбеков:\n"
+        "\n\nСтиль сообщений:\n"
+        "- Дружелюбный, но профессиональный\n"
+        "- Без спама и навязчивости\n"
+        "- Конкретика по услугам, без воды\n"
+        "- Ссылка на то, как нашли клиента (например: «видели ваш вопрос в чате»)\n"
+        "- Призыв к действию (написать нам, узнать цену, выехать на замер)\n"
+        "- Telegram-формат: короткие абзацы, без длинных простыней\n"
+        "- Не начинай с «Здравствуйте, спасибо за обращение» — мы первые пишем!\n"
+        "- Используй эмодзи умеренно\n\n"
+        "Верни ТОЛЬКО JSON без markdown без кодбеков:\n"
         '{"name": "название шаблона на русском (до 50 символов)", '
         '"body": "текст шаблона на русском (1-5 сообщений, с переносами строк)"}'
     )
@@ -2361,7 +2387,6 @@ async def api_template_generate(request: Request):
                     return HTMLResponse(content="Ошибка AI API", status_code=502)
                 result = await resp.json()
                 text = result["choices"][0]["message"]["content"].strip()
-                # strip markdown code fences if present
                 if text.startswith("```"):
                     text = text.split("\n", 1)[1]
                 if text.endswith("```"):
