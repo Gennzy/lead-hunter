@@ -37,6 +37,17 @@
 
     {% if not telegram_session.is_authorized %}
     <div style="margin-top:16px;padding:14px;background:var(--bg-secondary);border-radius:10px">
+        {% if password_needed %}
+        <h4 style="margin-bottom:10px">Двухфакторная аутентификация</h4>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:10px">Введите пароль 2FA вашего Telegram аккаунта</p>
+        <form method="post" action="/settings/telegram/authorize-password" style="display:flex;gap:8px;align-items:end">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group" style="margin:0;flex:1">
+                <input type="password" name="password" placeholder="Пароль 2FA" required style="width:100%">
+            </div>
+            <button type="submit" class="btn btn-primary">Подтвердить</button>
+        </form>
+        {% else %}
         <h4 style="margin-bottom:10px">Авторизация</h4>
         <p style="color:var(--text-secondary);font-size:12px;margin-bottom:10px">Введите код, полученный в Telegram</p>
         <form method="post" action="/settings/telegram/authorize" style="display:flex;gap:8px;align-items:end">
@@ -46,6 +57,7 @@
             </div>
             <button type="submit" class="btn btn-primary">Подтвердить</button>
         </form>
+        {% endif %}
     </div>
     {% endif %}
 

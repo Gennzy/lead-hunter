@@ -1565,7 +1565,7 @@ async def api_stats(request: Request):
 # ===== Telegram Session Management =====
 
 @app.get("/settings/telegram")
-async def telegram_sessions_page(request: Request, error: str = Query(None), success: str = Query(None)):
+async def telegram_sessions_page(request: Request, error: str = Query(None), success: str = Query(None), password_needed: str = Query(None)):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -1577,7 +1577,7 @@ async def telegram_sessions_page(request: Request, error: str = Query(None), suc
         sessions = TelegramSessionRepository(session, tenant_id)
         telegram_session = await sessions.get_by_tenant(tenant_id)
 
-    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(request), telegram_session=telegram_session, error=error, success=success)
+    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(request), telegram_session=telegram_session, error=error, success=success, password_needed=bool(password_needed))
     return templates.TemplateResponse(request, "telegram_sessions.html", ctx)
 
 
@@ -1663,10 +1663,46 @@ async def authorize_telegram_session(
     from app.telegram_factory import client_factory
     result = await client_factory.sign_in(tenant_id, telegram_session.phone_number, code)
 
+    if result.get("status") == "password_needed":
+        return RedirectResponse("/settings/telegram?password_needed=1", status_code=303)
+
     if "error" in result:
         return RedirectResponse(f"/settings/telegram?error={result['error']}", status_code=303)
 
     # Mark as authorized
+    async with async_session() as session:
+        sessions = TelegramSessionRepository(session, tenant_id)
+        await sessions.update_auth_status(tenant_id, True)
+        await session.commit()
+
+    return RedirectResponse("/settings/telegram?success=Telegram authorized successfully!", status_code=303)
+
+
+@app.post("/settings/telegram/authorize-password")
+async def authorize_telegram_password(
+    request: Request,
+    csrf_token: str = Form(...),
+    password: str = Form(...),
+):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    if not tenant_id:
+        return RedirectResponse("/settings/telegram?error=Super admin must select a tenant", status_code=303)
+
+    from app.telegram_factory import client_factory
+    result = await client_factory.sign_in_password(tenant_id, password)
+
+    if "error" in result:
+        return RedirectResponse(f"/settings/telegram?error={result['error']}", status_code=303)
+
     async with async_session() as session:
         sessions = TelegramSessionRepository(session, tenant_id)
         await sessions.update_auth_status(tenant_id, True)

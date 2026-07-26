@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from telethon import TelegramClient, connection
+import telethon.errors
 from sqlalchemy import select, update
 
 from app.models import TelegramSession, Tenant, async_session
@@ -273,8 +274,37 @@ class TelegramClientFactory:
             _restrict_session_file(_get_session_path(tenant_id) + ".session")
 
             return {"status": "authorized"}
+        except telethon.errors.SessionPasswordNeededError:
+            return {"status": "password_needed"}
         except Exception as e:
             logger.error("Sign in failed for tenant %d: %s", tenant_id, e)
+            return {"error": str(e)}
+
+    async def sign_in_password(self, tenant_id: int, password: str) -> dict:
+        """Sign in with 2FA password."""
+        if not _check_rate_limit(tenant_id):
+            return {"error": "Too many attempts. Wait 5 minutes."}
+
+        client = self._clients.get(tenant_id)
+        if not client:
+            return {"error": "Client not found"}
+
+        try:
+            await client.sign_in(password=password)
+            async with async_session() as session:
+                await session.execute(
+                    update(TelegramSession)
+                    .where(TelegramSession.tenant_id == tenant_id)
+                    .values(is_authorized=True,
+                            last_active=datetime.now(timezone.utc))
+                )
+                await session.commit()
+
+            _restrict_session_file(_get_session_path(tenant_id) + ".session")
+
+            return {"status": "authorized"}
+        except Exception as e:
+            logger.error("2FA sign in failed for tenant %d: %s", tenant_id, e)
             return {"error": str(e)}
 
 
