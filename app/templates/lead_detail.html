@@ -168,6 +168,7 @@
                 <button type="submit" name="feedback" value="useful" class="btn btn-sm {% if lead.feedback == 'useful' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">✓ Полезный</button>
                 <button type="submit" name="feedback" value="not_useful" class="btn btn-sm {% if lead.feedback == 'not_useful' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">✗ Не полезный</button>
                 {% if lead.feedback != 'useful' %}
+                <input type="hidden" name="feedback" value="not_useful">
                 <select name="reason" onchange="this.form.submit()" style="font-size:11px;padding:4px 8px;border:1px solid #d6d3d1;border-radius:6px">
                     <option value="">Причина...</option>
                     <option value="spam" {% if lead.feedback_reason == 'spam' %}selected{% endif %}>Спам</option>
