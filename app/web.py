@@ -334,7 +334,10 @@ async def dashboard(request: Request):
         hot_q = select(Lead).where(*hot_filters).order_by(Lead.lead_score.desc()).limit(5)
         hot_leads = (await session.execute(hot_q)).scalars().all()
 
-        # Attention leads: overdue + high urgency (operational priority)
+        # Overdue cutoff (> 4 hours without contact)
+        overdue_cutoff = now - timedelta(hours=4)
+
+        # Attention leads: overdue (operational priority)
         attention_filters = [Lead.status == "new"]
         if tenant_id is not None:
             attention_filters.append(Lead.tenant_id == tenant_id)
@@ -362,8 +365,7 @@ async def dashboard(request: Request):
         processed_today_q = select(func.count(Lead.id)).where(*processed_today_filters, Lead.updated_at >= today_start)
         processed_today = (await session.execute(processed_today_q)).scalar() or 0
 
-        # Overdue leads (> 4 hours without contact)
-        overdue_cutoff = now - timedelta(hours=4)
+        # Overdue leads count
         overdue_filters = [Lead.status == "new", Lead.created_at <= overdue_cutoff]
         if tenant_id is not None:
             overdue_filters.append(Lead.tenant_id == tenant_id)
