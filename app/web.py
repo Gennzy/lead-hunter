@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -2294,6 +2295,86 @@ async def template_delete(request: Request, template_id: int, csrf_token: str = 
             tmpl.is_active = False
             await session.commit()
     return RedirectResponse("/templates?success=Шаблон+удалён", status_code=303)
+
+
+@app.post("/api/templates/generate")
+async def api_template_generate(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return HTMLResponse(content="Unauthorized", status_code=401)
+    data = await request.json()
+    category = data.get("category", "general")
+    description = data.get("description", "")
+    context = data.get("context", "")
+    if not description.strip():
+        return HTMLResponse(content="Описание обязательно", status_code=400)
+
+    from config import settings as _settings
+    api_key = _settings.openai_api_key or ""
+    base_url = _settings.openai_base_url or "https://api.groq.com/openai/v1"
+    model = _settings.openai_model or "llama-3.3-70b-versatile"
+    if not api_key:
+        return HTMLResponse(content="AI API ключ не настроен", status_code=500)
+
+    category_labels = {
+        "general": "общий",
+        "first_contact": "первый контакт с клиентом",
+        "follow_up": "повторное напоминание / follow-up",
+        "deal_close": "закрытие сделки / договорённость",
+    }
+    cat_label = category_labels.get(category, category)
+
+    prompt = (
+        "Ты — копирайтер компании по ремонту квартир. "
+        "Создай короткий шаблон сообщения для Telegram.\n\n"
+        f"Категория: {cat_label}\n"
+        f"Описание: {description}\n"
+    )
+    if context:
+        prompt += f"Контекст: {context}\n"
+    prompt += (
+        "\nВерни ТОЛЬКО JSON без markdown без кодбеков:\n"
+        '{"name": "название шаблона на русском (до 50 символов)", '
+        '"body": "текст шаблона на русском (1-5 сообщений, с переносами строк)"}'
+    )
+
+    import aiohttp as _aiohttp
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                    "max_tokens": 1024,
+                },
+                timeout=_aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    logging.error("Groq API error %s: %s", resp.status, err)
+                    return HTMLResponse(content="Ошибка AI API", status_code=502)
+                result = await resp.json()
+                text = result["choices"][0]["message"]["content"].strip()
+                # strip markdown code fences if present
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1]
+                if text.endswith("```"):
+                    text = text.rsplit("```", 1)[0]
+                text = text.strip()
+                parsed = json.loads(text)
+                return HTMLResponse(
+                    content=json.dumps({"name": parsed.get("name", ""), "body": parsed.get("body", "")}),
+                    media_type="application/json",
+                )
+    except Exception as e:
+        logging.error("AI template generation error: %s", e)
+        return HTMLResponse(content="Ошибка генерации шаблона", status_code=500)
 
 
 @app.get("/kanban", response_class=HTMLResponse)

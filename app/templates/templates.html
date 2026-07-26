@@ -3,7 +3,10 @@
 {% block content %}
 <div class="page-toolbar">
     <h1>Шаблоны сообщений</h1>
-    <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Создать шаблон</button>
+    <div style="display:flex;gap:8px">
+        <button onclick="document.getElementById('aiModal').style.display='flex'" class="btn btn-outline">✨ Создать с ИИ</button>
+        <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Создать шаблон</button>
+    </div>
 </div>
 
 <div class="card">
@@ -39,10 +42,56 @@
                 </tr>
                 {% endfor %}
                 {% if not templates %}
-                <tr><td colspan="5" class="empty-state">Нет шаблонов. Создайте первый шаблон для быстрых ответов.</td></tr>
+                <tr><td colspan="5" class="empty-state">Нет шаблонов. Создайте первый шаблон или используйте ИИ для генерации.</td></tr>
                 {% endif %}
             </tbody>
         </table>
+    </div>
+</div>
+
+<div id="aiModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:560px">
+        <div class="modal-header">
+            <h3>✨ Создать шаблон с ИИ</h3>
+            <button class="modal-close" onclick="closeAiModal()">&times;</button>
+        </div>
+        <div style="padding:20px 24px">
+            <div class="form-group">
+                <label>Категория</label>
+                <select id="aiCategory">
+                    <option value="general">Общий</option>
+                    <option value="first_contact">Первый контакт</option>
+                    <option value="follow_up">Повторное напоминание</option>
+                    <option value="deal_close">Закрытие сделки</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Что нужно написать? *</label>
+                <textarea id="aiDescription" rows="3" placeholder="Например: приветственное сообщение для клиента, который оставил заявку на ремонт ванной" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Дополнительный контекст <span style="color:var(--text-muted)">(необязательно)</span></label>
+                <textarea id="aiContext" rows="2" placeholder="Например: мы — студия ремонта, работаем в Москве, тон общения — дружелюбный профессиональный" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical"></textarea>
+            </div>
+            <div id="aiResult" style="display:none;margin-bottom:16px">
+                <label style="font-weight:600;margin-bottom:6px;display:block">Результат генерации:</label>
+                <input id="aiResultName" type="text" placeholder="Название шаблона" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;margin-bottom:8px;box-sizing:border-box">
+                <textarea id="aiResultBody" rows="6" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+                <div style="display:flex;gap:8px;margin-top:8px">
+                    <button onclick="regenerateAi()" class="btn btn-outline btn-sm">🔄 Генерировать заново</button>
+                    <button onclick="saveAiTemplate()" class="btn btn-primary btn-sm">💾 Сохранить шаблон</button>
+                </div>
+            </div>
+            <div id="aiLoading" style="display:none;text-align:center;padding:20px">
+                <div style="font-size:24px;margin-bottom:8px">🤖</div>
+                <div style="color:var(--text-muted)">ИИ генерирует шаблон...</div>
+            </div>
+            <div id="aiError" style="display:none;padding:10px 14px;background:var(--danger-light,#fee2e2);color:var(--danger,#dc2626);border-radius:8px;margin-bottom:12px;font-size:13px"></div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="closeAiModal()">Отмена</button>
+                <button type="button" id="aiGenerateBtn" class="btn btn-primary" onclick="generateAiTemplate()">Генерировать</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -72,4 +121,86 @@
         </form>
     </div>
 </div>
+
+<script>
+function closeAiModal() {
+    document.getElementById('aiModal').style.display = 'none';
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = 'none';
+    document.getElementById('aiError').style.display = 'none';
+    document.getElementById('aiDescription').value = '';
+    document.getElementById('aiContext').value = '';
+    document.getElementById('aiResultName').value = '';
+    document.getElementById('aiResultBody').value = '';
+}
+
+async function generateAiTemplate() {
+    var desc = document.getElementById('aiDescription').value.trim();
+    if (!desc) { document.getElementById('aiDescription').focus(); return; }
+    var cat = document.getElementById('aiCategory').value;
+    var ctx = document.getElementById('aiContext').value.trim();
+
+    document.getElementById('aiError').style.display = 'none';
+    document.getElementById('aiResult').style.display = 'none';
+    document.getElementById('aiLoading').style.display = 'block';
+    document.getElementById('aiGenerateBtn').disabled = true;
+
+    try {
+        var resp = await fetch('/api/templates/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({category: cat, description: desc, context: ctx})
+        });
+        var text = await resp.text();
+        if (!resp.ok) {
+            throw new Error(text || 'Ошибка генерации');
+        }
+        var data = JSON.parse(text);
+        document.getElementById('aiResultName').value = data.name || '';
+        document.getElementById('aiResultBody').value = data.body || '';
+        document.getElementById('aiResult').style.display = 'block';
+    } catch(e) {
+        var errDiv = document.getElementById('aiError');
+        errDiv.textContent = e.message || 'Произошла ошибка';
+        errDiv.style.display = 'block';
+    } finally {
+        document.getElementById('aiLoading').style.display = 'none';
+        document.getElementById('aiGenerateBtn').disabled = false;
+    }
+}
+
+function regenerateAi() {
+    generateAiTemplate();
+}
+
+async function saveAiTemplate() {
+    var name = document.getElementById('aiResultName').value.trim();
+    var body = document.getElementById('aiResultBody').value.trim();
+    if (!name || !body) { showToast('Заполните название и текст', 'error'); return; }
+    var cat = document.getElementById('aiCategory').value;
+    var csrf = '{{ csrf_token }}';
+
+    try {
+        var formData = new URLSearchParams();
+        formData.append('name', name);
+        formData.append('category', cat);
+        formData.append('body', body);
+        formData.append('csrf_token', csrf);
+        var resp = await fetch('/templates/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: formData.toString()
+        });
+        if (resp.redirected || resp.ok) {
+            showToast('Шаблон сохранён', 'success');
+            closeAiModal();
+            setTimeout(function(){ location.reload(); }, 500);
+        } else {
+            showToast('Ошибка сохранения', 'error');
+        }
+    } catch(e) {
+        showToast('Ошибка сети', 'error');
+    }
+}
+</script>
 {% endblock %}
