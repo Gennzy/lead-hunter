@@ -34,7 +34,7 @@
                  data-urgency="{{ lead.urgency }}"
                  data-chat="{{ (lead.chat_title or '')[:50]|e }}"
                  data-msg="{{ (lead.message_text or '')[:300]|e }}"
-                 data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') if lead.created_at else '' }}"
+                 data-date="{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') if lead.created_at else '' }}"
                  data-reason="{{ (lead.reason or '')|e }}"
                  data-status-label="{{ lead.status_label()|e }}"
                  data-username="{{ (lead.username or '')|e }}"

@@ -55,6 +55,17 @@ def _save_chats(chats: list[str]):
 
 templates = Jinja2Templates(directory="app/templates")
 
+MSK = timezone(timedelta(hours=3))
+
+def _to_msk(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(MSK)
+
+templates.env.filters["msk"] = _to_msk
+
 
 async def _get_theme_context(user) -> dict:
     if not user:

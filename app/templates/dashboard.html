@@ -88,7 +88,7 @@
             <div class="attention-meta">
                 <span style="color:var(--text-muted);font-size:11px">{{ lead.chat_title[:30] }}</span>
                 <span style="color:var(--text-muted);font-size:11px">·</span>
-                <span style="color:var(--text-muted);font-size:11px">{{ lead.created_at.strftime('%d.%m %H:%M') }}</span>
+                <span style="color:var(--text-muted);font-size:11px">{{ (lead.created_at|msk).strftime('%d.%m %H:%M') }}</span>
             </div>
         </div>
         <a href="/leads/{{ lead.id }}" class="btn btn-primary btn-sm">Открыть</a>
@@ -237,7 +237,7 @@
             <tbody>
                 {% for lead in recent_leads[:10] %}
                 <tr>
-                    <td style="white-space:nowrap">{{ lead.created_at.strftime('%d.%m %H:%M') }}</td>
+                    <td style="white-space:nowrap">{{ (lead.created_at|msk).strftime('%d.%m %H:%M') }}</td>
                     <td>
                         <a href="/leads/{{ lead.id }}" style="font-weight:500">
                             {{ ((lead.first_name or '') ~ ' ' ~ (lead.last_name or ''))[:20] }}

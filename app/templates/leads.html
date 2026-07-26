@@ -148,7 +148,7 @@
                           data-username="{{ (lead.username or '')|escape }}"
                           data-userid="{{ lead.user_id or '' }}"
                           data-chat="{{ lead.chat_title|escape }}"
-                          data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}"
+                          data-date="{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}"
                           data-reason="{{ (lead.reason or '')|escape }}"
                           data-rec="{{ (lead.recommended_message or '')|escape }}"
                           data-score="{{ lead.lead_score }}"

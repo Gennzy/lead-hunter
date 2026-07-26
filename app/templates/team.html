@@ -76,7 +76,7 @@
     </div>
 
     <div class="team-member-footer">
-        {% if d.last_lead %}Последний лид: {{ d.last_lead.strftime('%d.%m.%Y %H:%M') }}{% else %}Лидов пока нет{% endif %}
+        {% if d.last_lead %}Последний лид: {{ (d.last_lead|msk).strftime('%d.%m.%Y %H:%M') }}{% else %}Лидов пока нет{% endif %}
     </div>
 </div>
 {% endfor %}

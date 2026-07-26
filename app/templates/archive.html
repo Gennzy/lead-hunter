@@ -28,7 +28,7 @@
         <tbody>
             {% for lead in leads %}
             <tr>
-                <td style="white-space:nowrap">{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td style="white-space:nowrap">{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</td>
                 <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
                 <td>
                     <a href="{{ lead.profile_url() }}" target="_blank">
@@ -67,7 +67,7 @@
                           data-name="{{ (lead.first_name or '')|escape }}"
                           data-username="{{ (lead.username or '')|escape }}"
                           data-chat="{{ lead.chat_title|escape }}"
-                          data-date="{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}"
+                          data-date="{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}"
                           data-reason="{{ (lead.reason or '')|escape }}"
                           data-rec="{{ (lead.recommended_message or '')|escape }}"
                           data-score="{{ lead.lead_score }}"

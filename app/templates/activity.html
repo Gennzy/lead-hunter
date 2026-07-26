@@ -53,7 +53,7 @@
                     <td style="padding:8px 10px">
                         <a href="/activity?days={{ days }}&user_id={{ u.id }}" style="color:var(--primary);text-decoration:none;font-weight:500">{{ u.full_name or u.username }}</a>
                     </td>
-                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ s.get('last_login').strftime('%d.%m %H:%M') if s.get('last_login') else '—' }}</td>
+                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ (s.get('last_login')|msk).strftime('%d.%m %H:%M') if s.get('last_login') else '—' }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('login_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('lead_view_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('click_write_count', 0) }}</td>
@@ -90,7 +90,7 @@
     <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">
         <span style="font-weight:500">{{ user_map.get(a.user_id, {}).full_name or user_map.get(a.user_id, {}).username or 'ID:' ~ a.user_id }}</span>
         — <a href="/leads/{{ a.lead_id }}" style="color:var(--primary)">Лид #{{ a.lead_id }}</a>
-        <span style="color:var(--text-secondary)"> · {{ a.created_at.strftime('%d.%m %H:%M') }}</span>
+        <span style="color:var(--text-secondary)"> · {{ (a.created_at|msk).strftime('%d.%m %H:%M') }}</span>
     </div>
     {% endfor %}
 </div>
@@ -102,7 +102,7 @@
     <div style="max-height:600px;overflow-y:auto">
         {% for entry in timeline %}
         <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;align-items:start">
-            <div style="min-width:50px;color:var(--text-secondary);font-size:12px;padding-top:2px">{{ entry.created_at.strftime('%d.%m %H:%M') }}</div>
+            <div style="min-width:50px;color:var(--text-secondary);font-size:12px;padding-top:2px">{{ (entry.created_at|msk).strftime('%d.%m %H:%M') }}</div>
             <div style="flex:1">
                 <span style="font-weight:500">{{ user_map.get(entry.user_id, {}).full_name or user_map.get(entry.user_id, {}).username or 'ID:' ~ entry.user_id }}</span>
                 {% if entry.action_type == 'login' %}

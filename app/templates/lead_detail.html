@@ -45,7 +45,7 @@
                     <div class="history-dot" style="background:var(--info)"></div>
                     <div>
                         <div class="history-text">{{ h.note }}</div>
-                        <div class="history-time">{{ h.user.full_name or h.user.username if h.user else '?' }} · {{ h.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+                        <div class="history-time">{{ h.user.full_name or h.user.username if h.user else '?' }} · {{ (h.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</div>
                     </div>
                 </div>
                 {% endif %}
@@ -67,7 +67,7 @@
             <h2>Информация</h2>
             <dl class="modal-meta">
                 <dt>ID</dt><dd>#{{ lead.id }}</dd>
-                <dt>Дата</dt><dd>{{ lead.created_at.strftime('%d.%m.%Y %H:%M') }}</dd>
+                <dt>Дата</dt><dd>{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</dd>
                 <dt>Чат</dt><dd>{{ lead.chat_title }}</dd>
                 <dt>Пользователь</dt>
                 <dd>
@@ -222,7 +222,7 @@
                     {% if h.note and h.action != 'created' %}
                     <div class="history-time">{{ h.note }}</div>
                     {% endif %}
-                    <div class="history-time">{{ h.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+                    <div class="history-time">{{ (h.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</div>
                 </div>
             </div>
             {% endif %}

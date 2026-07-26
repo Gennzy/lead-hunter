@@ -36,7 +36,7 @@
                         <span class="badge badge-low">Отключён</span>
                         {% endif %}
                     </td>
-                    <td style="font-size:12px;color:var(--text-muted)">{{ wh.last_triggered.strftime('%d.%m %H:%M') if wh.last_triggered else '—' }}</td>
+                    <td style="font-size:12px;color:var(--text-muted)">{{ (wh.last_triggered|msk).strftime('%d.%m %H:%M') if wh.last_triggered else '—' }}</td>
                     <td style="text-align:center">{{ wh.fail_count or 0 }}</td>
                     <td>
                         <form method="post" action="/webhooks/{{ wh.id }}/delete" style="display:inline">
