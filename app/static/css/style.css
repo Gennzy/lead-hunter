@@ -71,6 +71,56 @@
     --z-toast: 300;
 }
 
+/* ============ Dark Mode ============ */
+[data-theme="dark"] {
+    --bg: #1a1a1a;
+    --bg-subtle: #222222;
+    --surface: #2a2a2a;
+    --surface-hover: #333333;
+    --surface-active: #3a3a3a;
+    --border: #3a3a3a;
+    --border-subtle: #333333;
+    --text: #e8e8e8;
+    --text-secondary: #b0b0b0;
+    --text-muted: #707070;
+    --text-inverse: #1a1a1a;
+    --primary: #d4a574;
+    --primary-hover: #c49564;
+    --primary-light: #2a2520;
+    --primary-muted: #8a6a4a;
+    --primary-ring: rgba(212, 165, 116, 0.2);
+    --success: #22c55e;
+    --success-light: #1a2e1a;
+    --success-ring: rgba(34, 197, 94, 0.15);
+    --warning: #f59e0b;
+    --warning-light: #2e2a1a;
+    --warning-ring: rgba(245, 158, 11, 0.15);
+    --danger: #ef4444;
+    --danger-light: #2e1a1a;
+    --danger-ring: rgba(239, 68, 68, 0.15);
+    --info: #3b82f6;
+    --info-light: #1a1e2e;
+    --info-ring: rgba(59, 130, 246, 0.15);
+    --sh-xs: 0 1px 2px rgba(0,0,0,.2);
+    --sh-sm: 0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
+    --sh-md: 0 4px 12px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.2);
+    --sh-lg: 0 12px 40px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.2);
+}
+[data-theme="dark"] body { background: var(--bg); color: var(--text); }
+[data-theme="dark"] .sidebar { background: var(--surface); border-right-color: var(--border); }
+[data-theme="dark"] .card { background: var(--surface); border-color: var(--border); }
+[data-theme="dark"] .data-table th { background: var(--bg-subtle); color: var(--text-secondary); }
+[data-theme="dark"] .data-table td { border-color: var(--border-subtle); color: var(--text); }
+[data-theme="dark"] input, [data-theme="dark"] select, [data-theme="dark"] textarea { background: var(--bg-subtle); color: var(--text); border-color: var(--border); }
+[data-theme="dark"] .modal-content { background: var(--surface); }
+[data-theme="dark"] .stat-card { background: var(--surface); border-color: var(--border); }
+[data-theme="dark"] .status-bar-row .bar-bg { background: var(--bg-subtle); }
+[data-theme="dark"] .progress-bar { background: var(--bg-subtle); }
+[data-theme="dark"] .badge { background: var(--bg-subtle); color: var(--text-secondary); }
+[data-theme="dark"] .toast { color: var(--text); }
+[data-theme="dark"] .modal-overlay, [data-theme="dark"] .sidebar-overlay { background: rgba(0,0,0,.6); }
+[data-theme="dark"] .mobile-header { background: var(--surface); border-bottom-color: var(--border); }
+
 /* ============ Reset ============ */
 *,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
 

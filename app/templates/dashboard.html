@@ -2,7 +2,21 @@
 {% block title %}Dashboard — Lead Hunter{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
-<p class="subtitle">Обзор лидов на ремонт квартир</p>
+<p class="subtitle">Обзор лидов на ремонт квартир <span id="refreshTimer" style="font-size:12px;color:var(--text-muted);margin-left:8px"></span></p>
+
+<script>
+(function(){
+    var secs = 60;
+    var el = document.getElementById('refreshTimer');
+    function tick(){
+        if(secs <= 0){ location.reload(); return; }
+        el.textContent = 'обновление через ' + secs + 'с';
+        secs--;
+        setTimeout(tick, 1000);
+    }
+    tick();
+})();
+</script>
 
 <div class="stats-grid">
     <a href="/leads?status=new" class="stat-card primary" style="text-decoration:none">
@@ -58,7 +72,7 @@
         Требуют внимания
         <span style="font-size:12px;font-weight:400;color:var(--text-muted)">({{ unprocessed_count }} новых{% if overdue_count > 0 %}, {{ overdue_count }} просроченных{% endif %})</span>
     </h3>
-    {% for lead in hot_leads %}
+    {% for lead in attention_leads %}
     <div class="attention-item">
         <div style="flex:1;min-width:0">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -80,8 +94,8 @@
         <a href="/leads/{{ lead.id }}" class="btn btn-primary btn-sm">Открыть</a>
     </div>
     {% endfor %}
-    {% if not hot_leads %}
-    <p style="color:var(--text-muted);font-size:13px;padding:8px 0">Все лиды обработаны!</p>
+    {% if not attention_leads %}
+    <p style="color:var(--text-muted);font-size:13px;padding:8px 0">Нет просроченных лидов — все обработаны вовремя!</p>
     {% endif %}
 </div>
 {% endif %}
@@ -250,7 +264,4 @@
     </div>
 </div>
 
-<div style="margin-top:20px;display:flex;gap:12px">
-    <a href="/billing" class="btn btn-outline">Биллинг и лимиты →</a>
-</div>
 {% endblock %}

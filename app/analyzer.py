@@ -877,7 +877,7 @@ _INTENT_COMPILED = [(re.compile(p, re.IGNORECASE), score, urg) for p, score, urg
 
 def _keyword_score(text: str, chat_title: str = "", reply_to_text: str = None,
                     keywords: set[str] = None, noise_keywords: set[str] = None,
-                    user_name: str = None) -> dict:
+                    user_name: str = None, tenant_config=None) -> dict:
     if keywords is None:
         keywords = KEYWORDS
     if noise_keywords is None:
@@ -1003,7 +1003,7 @@ async def analyze_message(
             logger.info("AI disabled for tenant %d, using keyword analysis", tenant_id)
             return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                    keywords=keywords, noise_keywords=noise_keywords,
-                                   user_name=user_name)
+                                   user_name=user_name, tenant_config=tenant_config)
 
         from app.models import async_session, TenantUsage
         from app.repositories import TenantUsageRepository
@@ -1018,7 +1018,7 @@ async def analyze_message(
                                tenant_id, ai_requests_today, tenant_config.max_ai_requests_per_day)
                 return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                        keywords=keywords, noise_keywords=noise_keywords,
-                                       user_name=user_name)
+                                       user_name=user_name, tenant_config=tenant_config)
 
             # Check daily token limit
             tokens_today = await usage.sum_tokens_today(tenant_id)
@@ -1027,7 +1027,7 @@ async def analyze_message(
                                tenant_id, tokens_today, tenant_config.max_tokens_per_day)
                 return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                        keywords=keywords, noise_keywords=noise_keywords,
-                                       user_name=user_name)
+                                       user_name=user_name, tenant_config=tenant_config)
 
             # Check monthly cost limit
             cost_month = await usage.sum_cost_month(tenant_id)
@@ -1036,13 +1036,13 @@ async def analyze_message(
                                tenant_id, cost_month, tenant_config.max_cost_per_month_usd)
                 return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                        keywords=keywords, noise_keywords=noise_keywords,
-                                       user_name=user_name)
+                                       user_name=user_name, tenant_config=tenant_config)
 
     if not settings.openai_api_key:
         logger.warning("OpenAI API key not set — using keyword-only analysis (no AI)")
         return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                keywords=keywords, noise_keywords=noise_keywords,
-                               user_name=user_name)
+                               user_name=user_name, tenant_config=tenant_config)
 
     now = time.time()
     time_since_last = now - _last_api_call
@@ -1061,7 +1061,7 @@ async def analyze_message(
             if client is None:
                 return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                                        keywords=keywords, noise_keywords=noise_keywords,
-                                       user_name=user_name)
+                                       user_name=user_name, tenant_config=tenant_config)
 
 
             response = await client.chat.completions.create(
@@ -1131,7 +1131,7 @@ async def analyze_message(
 
     return _keyword_score(text, chat_title, reply_to_text=reply_to_text,
                           keywords=keywords, noise_keywords=noise_keywords,
-                          user_name=user_name)
+                          user_name=user_name, tenant_config=tenant_config)
 
 
 async def analyze_feedback(tenant_id: int = None) -> dict:

@@ -6,10 +6,6 @@
     <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Добавить</button>
 </div>
 
-{% if request.query_params.get('error') %}
-<div class="modal-section modal-reason" style="margin-bottom:16px">{{ request.query_params.get('error') }}</div>
-{% endif %}
-
 <div class="table-wrap">
     <table>
         <thead>
@@ -74,6 +70,9 @@
                 </td>
             </tr>
             {% endfor %}
+            {% if not users %}
+            <tr><td colspan="5" class="empty-state">Нет сотрудников</td></tr>
+            {% endif %}
         </tbody>
     </table>
 </div>

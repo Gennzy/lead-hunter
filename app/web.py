@@ -334,6 +334,20 @@ async def dashboard(request: Request):
         hot_q = select(Lead).where(*hot_filters).order_by(Lead.lead_score.desc()).limit(5)
         hot_leads = (await session.execute(hot_q)).scalars().all()
 
+        # Attention leads: overdue + high urgency (operational priority)
+        attention_filters = [Lead.status == "new"]
+        if tenant_id is not None:
+            attention_filters.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            attention_filters.append(manager_filter)
+        attention_q = (
+            select(Lead)
+            .where(and_(*attention_filters, Lead.created_at <= overdue_cutoff))
+            .order_by(Lead.created_at.asc())
+            .limit(5)
+        )
+        attention_leads = (await session.execute(attention_q)).scalars().all()
+
         # Unprocessed leads count
         unprocessed_filters = [Lead.status == "new"]
         if tenant_id is not None:
@@ -357,7 +371,7 @@ async def dashboard(request: Request):
         overdue_count = (await session.execute(overdue_q)).scalar() or 0
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, total=total, new_today=new_today, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=datetime.utcnow())
+    ctx = await _template_ctx(user, total=total, new_today=new_today, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, attention_leads=attention_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=datetime.utcnow())
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -487,6 +501,96 @@ async def leads_list(
     return templates.TemplateResponse(request, "leads.html", ctx)
 
 
+@app.get("/leads/export/csv")
+async def leads_export_csv(
+    request: Request,
+    lead_status: str = Query(None, alias="status"),
+    chat: str = Query(None),
+    search: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+):
+    import csv
+    import io
+
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    manager_id = user.id if user.role == "manager" else None
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+
+        extra_filters = []
+        if lead_status:
+            extra_filters.append(Lead.status == lead_status)
+        if chat:
+            extra_filters.append(Lead.chat_title == chat)
+        if search:
+            safe_search = sanitize_input(search, 100)
+            pattern = f"%{safe_search}%"
+            from sqlalchemy import or_
+            extra_filters.append(
+                or_(
+                    Lead.message_text.ilike(pattern),
+                    Lead.first_name.ilike(pattern),
+                    Lead.last_name.ilike(pattern),
+                    Lead.username.ilike(pattern),
+                    Lead.chat_title.ilike(pattern),
+                )
+            )
+        if date_from:
+            try:
+                df_date = datetime.strptime(date_from, "%Y-%m-%d")
+                extra_filters.append(Lead.created_at >= df_date)
+            except ValueError:
+                pass
+        if date_to:
+            try:
+                dt_date = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                extra_filters.append(Lead.created_at < dt_date)
+            except ValueError:
+                pass
+
+        q = select(Lead)
+        if not lead_status:
+            q = q.where(Lead.status != "deleted")
+        if tenant_id is not None:
+            q = q.where(Lead.tenant_id == tenant_id)
+        if manager_id:
+            q = q.where(Lead.assigned_to == manager_id)
+        for f in extra_filters:
+            q = q.where(f)
+        q = q.order_by(Lead.created_at.desc())
+        all_leads = (await session.execute(q)).scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Дата", "Имя", "Username", "Чат", "Score", "Срочность", "Статус", "Текст", "Причина"])
+    for lead in all_leads:
+        writer.writerow([
+            lead.id,
+            lead.created_at.strftime("%d.%m.%Y %H:%M") if lead.created_at else "",
+            lead.first_name or "",
+            lead.username or "",
+            lead.chat_title or "",
+            lead.lead_score or 0,
+            lead.urgency or "",
+            lead.status or "",
+            (lead.message_text or "")[:200],
+            lead.reason or "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=leads_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"},
+    )
+
+
 @app.get("/leads/new", response_class=HTMLResponse)
 async def lead_create_form(request: Request):
     user = await get_current_user(request)
@@ -551,7 +655,7 @@ async def lead_feedback(request: Request, lead_id: int, feedback: str = Form(...
             lead.feedback_reason = reason if reason else None
             await session.commit()
 
-    return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+    return RedirectResponse(f"/leads/{lead_id}?success=Оценка+сохранена", status_code=303)
 
 
 @app.post("/leads/{lead_id}/log-write-click")
@@ -700,7 +804,7 @@ async def lead_create(
             note=f"Создан пользователем {user.full_name or user.username}",
         )
         await session.commit()
-    return RedirectResponse("/leads", status_code=303)
+    return RedirectResponse("/leads?success=Лид+создан", status_code=303)
 
 
 @app.post("/leads/{lead_id}/status")
@@ -757,7 +861,7 @@ async def update_status(
             meta={"from": old_status, "to": lead_status},
         )
         await session.commit()
-    return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+    return RedirectResponse(f"/leads/{lead_id}?success=Статус+изменён", status_code=303)
 
 
 @app.post("/leads/{lead_id}/delete")
@@ -803,7 +907,7 @@ async def lead_delete(
             note=f"{user.full_name or user.username} удалил лид",
         )
         await session.commit()
-    return RedirectResponse("/leads", status_code=303)
+    return RedirectResponse("/leads?success=Лид+удалён", status_code=303)
 
 
 @app.post("/leads/bulk-action")
@@ -875,7 +979,7 @@ async def leads_bulk_action(
                 )
                 await action_log.log(user.id, "status_change", lead_id=lid, meta={"from": old, "to": action})
         await session.commit()
-    return RedirectResponse("/leads", status_code=303)
+    return RedirectResponse("/leads?success=Массовое+действие+выполнено", status_code=303)
 
 
 @app.post("/leads/{lead_id}/note")
@@ -914,7 +1018,7 @@ async def lead_add_note(
             note=note_text,
         )
         await session.commit()
-    return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+    return RedirectResponse(f"/leads/{lead_id}?success=Заметка+добавлена", status_code=303)
 
 
 @app.post("/leads/{lead_id}/assign")
@@ -957,7 +1061,7 @@ async def lead_assign(
             note=f"{user.full_name or user.username} назначил ответственного",
         )
         await session.commit()
-    return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+    return RedirectResponse(f"/leads/{lead_id}?success=Лид+назначен", status_code=303)
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -1017,7 +1121,7 @@ async def user_add(
             tenant_id=user.tenant_id,
         )
         await session.commit()
-    return RedirectResponse("/users", status_code=303)
+    return RedirectResponse("/users?success=Пользователь+создан", status_code=303)
 
 
 @app.post("/users/{user_id}/toggle")
@@ -1040,7 +1144,8 @@ async def user_toggle(
         if target and target.id != admin.id:
             target.is_active = not target.is_active
             await session.commit()
-    return RedirectResponse("/users", status_code=303)
+    status_text = "активирован" if target and target.is_active else "деактивирован"
+    return RedirectResponse(f"/users?success=Пользователь+{status_text}", status_code=303)
 
 
 @app.post("/users/{user_id}/role")
@@ -1074,7 +1179,7 @@ async def user_change_role(
                 return RedirectResponse("/users?error=Нельзя изменить роль супер-админа", status_code=303)
             target.role = new_role
             await session.commit()
-    return RedirectResponse("/users", status_code=303)
+    return RedirectResponse("/users?success=Роль+изменена", status_code=303)
 
 
 @app.post("/users/{user_id}/reset-password")
@@ -1100,7 +1205,7 @@ async def user_reset_password(
         target.password_hash = hash_password(new_password)
         target.must_change_password = True
         await session.commit()
-    return RedirectResponse("/users", status_code=303)
+    return RedirectResponse("/users?success=Пароль+сброшен", status_code=303)
 
 
 @app.get("/analytics", response_class=HTMLResponse)
@@ -1745,7 +1850,7 @@ async def add_chat(
 
     chats.append(chat)
     _save_chats(chats)
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings?success=Чат+добавлен", status_code=303)
 
 
 @app.post("/settings/chats/remove")
@@ -1765,7 +1870,7 @@ async def remove_chat(
     if chat in chats:
         chats.remove(chat)
         _save_chats(chats)
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings?success=Чат+удалён", status_code=303)
 
 
 @app.get("/api/stats")

@@ -5,6 +5,7 @@
     <h1>Лиды <small>{{ total }}</small></h1>
     <div style="display:flex;gap:8px;align-items:center">
         <span style="color:var(--text-muted);font-size:12px">{{ new_week }} новых за неделю</span>
+        <a href="/leads/export/csv{% if status_filter %}?status={{ status_filter }}{% endif %}{% if chat_filter %}{% if status_filter %}&{% else %}?{% endif %}chat={{ chat_filter }}{% endif %}{% if search %}{% if status_filter or chat_filter %}&{% else %}?{% endif %}search={{ search }}{% endif %}" class="btn btn-outline btn-sm">📥 CSV</a>
         {% if user and user.role != 'viewer' %}
         <a href="/leads/new" class="btn btn-primary">+ Новый лид</a>
         {% endif %}
@@ -177,7 +178,7 @@
     {% if page > 1 %}
     <a href="?page={{ page-1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">← Назад</a>
     {% endif %}
-    <span class="page-info">Страница {{ page }} из {{ total_pages }}</span>
+    <span class="page-info">Страница {{ page }} из {{ total_pages }} <span style="color:var(--text-muted);font-size:12px">({{ total }} лидов)</span></span>
     {% if page < total_pages %}
     <a href="?page={{ page+1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">Далее →</a>
     {% endif %}

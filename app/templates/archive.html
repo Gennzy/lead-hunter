@@ -100,7 +100,7 @@
     {% if page > 1 %}
     <a href="?page={{ page-1 }}&search={{ search }}" class="btn btn-secondary btn-sm">← Назад</a>
     {% endif %}
-    <span class="page-info">Страница {{ page }} из {{ total_pages }}</span>
+    <span class="page-info">Страница {{ page }} из {{ total_pages }} <span style="color:var(--text-muted);font-size:12px">({{ total }} лидов)</span></span>
     {% if page < total_pages %}
     <a href="?page={{ page+1 }}&search={{ search }}" class="btn btn-secondary btn-sm">Далее →</a>
     {% endif %}
