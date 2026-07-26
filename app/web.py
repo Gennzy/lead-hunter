@@ -1670,7 +1670,7 @@ async def telegram_sessions_page(request: Request, error: str = Query(None), suc
         sessions = TelegramSessionRepository(session, tenant_id)
         telegram_session = await sessions.get_by_tenant(tenant_id)
 
-    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(request), telegram_session=telegram_session, error=error, success=success, password_needed=bool(password_needed))
+    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(_get_session_id(request)), telegram_session=telegram_session, error=error, success=success, password_needed=bool(password_needed))
     return templates.TemplateResponse(request, "telegram_sessions.html", ctx)
 
 
@@ -1867,7 +1867,7 @@ async def billing_page(request: Request):
 
         leads_month = await usage.count_events_month(tenant_id, "lead_created")
 
-    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(request), ai_today=ai_today, tokens_today=tokens_today, cost_today=cost_today, ai_month=ai_month, tokens_month=tokens_month, cost_month=cost_month, leads_month=leads_month, max_ai_per_day=tenant_config.max_ai_requests_per_day, max_tokens_per_day=tenant_config.max_tokens_per_day, max_cost_per_month=tenant_config.max_cost_per_month_usd, max_leads_per_month=tenant_config.max_leads_per_month, ai_enabled=tenant_config.ai_enabled)
+    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(_get_session_id(request)), ai_today=ai_today, tokens_today=tokens_today, cost_today=cost_today, ai_month=ai_month, tokens_month=tokens_month, cost_month=cost_month, leads_month=leads_month, max_ai_per_day=tenant_config.max_ai_requests_per_day, max_tokens_per_day=tenant_config.max_tokens_per_day, max_cost_per_month=tenant_config.max_cost_per_month_usd, max_leads_per_month=tenant_config.max_leads_per_month, ai_enabled=tenant_config.ai_enabled)
     return templates.TemplateResponse(request, "billing.html", ctx)
 
 
