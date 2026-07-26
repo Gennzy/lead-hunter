@@ -21,6 +21,14 @@
         }
     </style>
     {% endif %}
+    <script>
+    (function(){
+        var t = localStorage.getItem('theme');
+        if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+        }
+    })();
+    </script>
 </head>
 <body>
     <div class="mobile-header">
@@ -149,12 +157,9 @@
         document.getElementById('themeIconDark').style.display = isDark ? 'none' : 'block';
     }
     (function(){
-        var t = localStorage.getItem('theme');
-        if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            document.getElementById('themeIconLight').style.display = 'none';
-            document.getElementById('themeIconDark').style.display = 'block';
-        }
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        document.getElementById('themeIconLight').style.display = isDark ? 'none' : 'block';
+        document.getElementById('themeIconDark').style.display = isDark ? 'block' : 'none';
     })();
     function showToast(message, type) {
         type = type || 'info';
