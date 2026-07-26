@@ -229,3 +229,36 @@ class ActionLog(Base):
     action_type = Column(String(50), nullable=False)
     meta = Column(_JSONType, nullable=True)
     created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class MessageTemplate(Base):
+    __tablename__ = "message_templates"
+    __table_args__ = (
+        Index("ix_message_templates_tenant_id", "tenant_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    category = Column(String(50), default="general")  # first_contact, follow_up, deal_close, custom
+    body = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    use_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+
+
+class Webhook(Base):
+    __tablename__ = "webhooks"
+    __table_args__ = (
+        Index("ix_webhooks_tenant_id", "tenant_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    url = Column(String(1024), nullable=False)
+    events = Column(_JSONType, default=list)  # ["lead_created", "status_change", "deal_closed"]
+    secret = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True)
+    last_triggered = Column(DateTime, nullable=True)
+    fail_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())

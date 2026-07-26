@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage, ActionLog,
+    MessageTemplate, Webhook,
 )
 
 ModelType = TypeVar("ModelType")
@@ -273,6 +274,15 @@ class LeadRepository(BaseRepository):
             filters.append(Lead.tenant_id == self.tenant_id)
         result = await self.session.execute(
             select(Lead).where(*filters).order_by(Lead.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_all(self) -> list[Lead]:
+        filters = [Lead.status != "deleted"]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(Lead).where(*filters).order_by(Lead.created_at.desc())
         )
         return list(result.scalars().all())
 
@@ -763,3 +773,76 @@ class ActionLogRepository(BaseRepository[ActionLog]):
                 anomalies.append(w)
 
         return anomalies
+
+
+class MessageTemplateRepository(BaseRepository):
+    model = MessageTemplate
+
+    async def list_active(self):
+        q = select(MessageTemplate).where(
+            MessageTemplate.is_active == True,
+        )
+        if self.tenant_id is not None:
+            q = q.where(MessageTemplate.tenant_id == self.tenant_id)
+        q = q.order_by(MessageTemplate.use_count.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_by_id(self, template_id: int):
+        q = select(MessageTemplate).where(MessageTemplate.id == template_id)
+        if self.tenant_id is not None:
+            q = q.where(MessageTemplate.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def create(self, name: str, category: str, body: str, tenant_id: int = None):
+        tmpl = MessageTemplate(
+            tenant_id=tenant_id or self.tenant_id,
+            name=name,
+            category=category,
+            body=body,
+        )
+        self.session.add(tmpl)
+        await self.session.flush()
+        return tmpl
+
+    async def increment_use(self, template_id: int):
+        tmpl = await self.get_by_id(template_id)
+        if tmpl:
+            tmpl.use_count = (tmpl.use_count or 0) + 1
+        return tmpl
+
+
+class WebhookRepository(BaseRepository):
+    model = Webhook
+
+    async def list_active(self):
+        q = select(Webhook).where(Webhook.is_active == True)
+        if self.tenant_id is not None:
+            q = q.where(Webhook.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_by_id(self, webhook_id: int):
+        q = select(Webhook).where(Webhook.id == webhook_id)
+        if self.tenant_id is not None:
+            q = q.where(Webhook.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def create(self, url: str, events: list, secret: str = None, tenant_id: int = None):
+        wh = Webhook(
+            tenant_id=tenant_id or self.tenant_id,
+            url=url,
+            events=events,
+            secret=secret,
+        )
+        self.session.add(wh)
+        await self.session.flush()
+        return wh
+
+    async def mark_triggered(self, webhook_id: int, success: bool):
+        wh = await self.get_by_id(webhook_id)
+        if wh:
+            wh.last_triggered = datetime.utcnow()
+            if not success:
+                wh.fail_count = (wh.fail_count or 0) + 1
+            else:
+                wh.fail_count = 0
+        return wh

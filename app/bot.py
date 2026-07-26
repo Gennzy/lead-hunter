@@ -306,3 +306,160 @@ async def check_and_notify_anomalies():
 
         except Exception as e:
             logger.error("Anomaly check failed for tenant %d: %s", tenant.id, e)
+
+
+async def send_reminder_notification(chat_id: int, message: str):
+    try:
+        await bot.send_message(chat_id, message, parse_mode="HTML")
+    except Exception as e:
+        logger.error("Failed to send reminder to %d: %s", chat_id, e)
+
+
+async def check_and_send_reminders():
+    """Check all tenants for unprocessed leads and send reminders."""
+    from datetime import datetime, timedelta
+    from app.models import Tenant, User, Lead
+    from app.repositories import UserRepository
+    from sqlalchemy import select, func
+
+    async with async_session() as session:
+        result = await session.execute(select(Tenant).where(Tenant.is_active == True))
+        tenants = result.scalars().all()
+
+    for tenant in tenants:
+        try:
+            tc = await _get_tenant_config(tenant.id)
+            reminder_hours = tc._config.get("reminder_hours", 2)
+            escalation_hours = tc._config.get("escalation_hours", 4)
+            owner_chat_id = tc.owner_chat_id
+            if not owner_chat_id:
+                continue
+
+            cutoff_reminder = datetime.utcnow() - timedelta(hours=reminder_hours)
+            cutoff_escalation = datetime.utcnow() - timedelta(hours=escalation_hours)
+
+            async with async_session() as session:
+                users_repo = UserRepository(session, tenant.id)
+                managers = await users_repo.list_active()
+                manager_map = {m.id: m for m in managers if m.role in ("admin", "manager")}
+
+                # Reminder leads: new, unassigned or assigned, older than reminder_hours
+                q = select(Lead).where(
+                    Lead.tenant_id == tenant.id,
+                    Lead.status == "new",
+                    Lead.created_at <= cutoff_reminder,
+                )
+                leads = (await session.execute(q)).scalars().all()
+
+                for lead in leads:
+                    age_hours = (datetime.utcnow() - lead.created_at).total_seconds() / 3600
+
+                    if age_hours >= escalation_hours and lead.assigned_to:
+                        # Escalation: notify owner
+                        assignee = manager_map.get(lead.assigned_to)
+                        assignee_name = assignee.full_name or assignee.username if assignee else "Неизвестный"
+                        text = (
+                            f"🚨 <b>ЭСКАЛАЦИЯ</b>\n\n"
+                            f"Лид <a href=\"https://77.233.213.224/leads/{lead.id}\">#{lead.id}</a> "
+                            f"не обработан {age_hours:.0f} ч.\n"
+                            f"Назначен: {assignee_name}\n"
+                            f"Score: {lead.lead_score|int} | {lead.urgency}\n"
+                            f"Чат: {lead.chat_title[:40]}"
+                        )
+                        await send_reminder_notification(owner_chat_id, text)
+                    elif age_hours >= reminder_hours:
+                        # Reminder to assigned manager or owner
+                        target_chat = None
+                        if lead.assigned_to:
+                            assignee = manager_map.get(lead.assigned_to)
+                            if assignee:
+                                target_chat = tc._config.get(f"tg_user_{assignee.id}")
+                        if not target_chat:
+                            target_chat = owner_chat_id
+
+                        text = (
+                            f"⏰ <b>Напоминание</b>\n\n"
+                            f"Лид <a href=\"https://77.233.213.224/leads/{lead.id}\">#{lead.id}</a> "
+                            f"ожидает обработки {age_hours:.0f} ч.\n"
+                            f"Score: {lead.lead_score|int} | {lead.urgency}\n"
+                            f"Чат: {lead.chat_title[:40]}"
+                        )
+                        await send_reminder_notification(target_chat, text)
+
+            logger.info("Reminders check completed for tenant %d", tenant.id)
+        except Exception as e:
+            logger.error("Reminder check failed for tenant %d: %s", tenant.id, e)
+
+
+async def auto_assign_leads():
+    """Auto-assign unassigned new leads to the least-loaded manager."""
+    from app.models import Tenant, Lead, User
+    from app.repositories import UserRepository
+    from sqlalchemy import select, func
+
+    async with async_session() as session:
+        result = await session.execute(select(Tenant).where(Tenant.is_active == True))
+        tenants = result.scalars().all()
+
+    for tenant in tenants:
+        try:
+            tc = await _get_tenant_config(tenant.id)
+            if not tc._config.get("auto_assign", False):
+                continue
+
+            async with async_session() as session:
+                users_repo = UserRepository(session, tenant.id)
+                managers = await users_repo.list_active()
+                active_managers = [m for m in managers if m.role in ("admin", "manager")]
+                if not active_managers:
+                    continue
+
+                # Get unassigned leads
+                q = select(Lead).where(
+                    Lead.tenant_id == tenant.id,
+                    Lead.status == "new",
+                    Lead.assigned_to.is_(None),
+                )
+                unassigned = (await session.execute(q)).scalars().all()
+
+                if not unassigned:
+                    continue
+
+                # Count active leads per manager
+                load_q = (
+                    select(Lead.assigned_to, func.count(Lead.id))
+                    .where(
+                        Lead.tenant_id == tenant.id,
+                        Lead.status.in_(["new", "contacted", "in_progress"]),
+                        Lead.assigned_to.isnot(None),
+                    )
+                    .group_by(Lead.assigned_to)
+                )
+                load_rows = (await session.execute(load_q)).fetchall()
+                load_map = {uid: cnt for uid, cnt in load_rows}
+
+                # Round-robin with least load
+                for lead in unassigned:
+                    best_manager = min(active_managers, key=lambda m: load_map.get(m.id, 0))
+                    lead.assigned_to = best_manager.id
+                    load_map[best_manager.id] = load_map.get(best_manager.id, 0) + 1
+
+                    from app.repositories import LeadHistoryRepository, ActionLogRepository
+                    history = LeadHistoryRepository(session, tenant.id)
+                    await history.create(
+                        lead_id=lead.id,
+                        user_id=None,
+                        action="auto_assigned",
+                        note=f"Авто-назначен: {best_manager.full_name or best_manager.username}",
+                    )
+                    await ActionLogRepository(session, tenant.id).log(
+                        None, "auto_assign", lead_id=lead.id,
+                        meta={"assigned_to": best_manager.id, "via": "auto_assign"},
+                    )
+
+                await session.commit()
+                if unassigned:
+                    logger.info("Auto-assigned %d leads for tenant %d", len(unassigned), tenant.id)
+
+        except Exception as e:
+            logger.error("Auto-assign failed for tenant %d: %s", tenant.id, e)

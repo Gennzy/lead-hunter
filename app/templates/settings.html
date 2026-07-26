@@ -38,6 +38,22 @@
             <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Оставьте пустым для использования промпта по умолчанию. Максимум 8000 символов.</p>
         </div>
 
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px">
+            <h4 style="margin-bottom:12px;font-size:14px">Автоматизация</h4>
+            <div class="form-group" style="display:flex;align-items:center;gap:10px">
+                <input type="checkbox" id="auto_assign" name="auto_assign" value="true" {% if tenant_config.get('auto_assign') %}checked{% endif %} style="width:18px;height:18px">
+                <label for="auto_assign" style="margin:0">Авто-назначение лидов (равномерная загрузка менеджеров)</label>
+            </div>
+            <div class="form-group">
+                <label for="reminder_hours">Напоминание через (часов)</label>
+                <input type="number" id="reminder_hours" name="reminder_hours" value="{{ tenant_config.get('reminder_hours', 2) }}" min="1" max="48" style="width:100px">
+            </div>
+            <div class="form-group">
+                <label for="escalation_hours">Эскалация через (часов)</label>
+                <input type="number" id="escalation_hours" name="escalation_hours" value="{{ tenant_config.get('escalation_hours', 4) }}" min="1" max="72" style="width:100px">
+            </div>
+        </div>
+
         <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
 </div>

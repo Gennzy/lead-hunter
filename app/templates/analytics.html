@@ -28,6 +28,62 @@
     </div>
 </div>
 
+<div class="card" style="margin-bottom:20px">
+    <h3>Воронка продаж</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">Конверсия на каждом этапе воронки</p>
+    <div style="display:flex;gap:8px;align-items:end;height:200px;padding:0 10px">
+        {% set funnel_labels = {'new': 'Новые', 'contacted': 'Контакт', 'interested': 'Заинтересованы', 'deal': 'Сделки'} %}
+        {% set funnel_colors = {'new': 'var(--info)', 'contacted': 'var(--warning)', 'interested': 'var(--success)', 'deal': '#16a34a'} %}
+        {% set max_count = funnel|map(attribute=1)|max if funnel else 1 %}
+        {% for status, count in funnel %}
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">
+            <span style="font-weight:700;font-size:18px;color:{{ funnel_colors.get(status, 'var(--text)') }}">{{ count }}</span>
+            <div style="width:100%;background:{{ funnel_colors.get(status, 'var(--border)') }};border-radius:6px 6px 0 0;height:{{ (count / max_count * 140) if max_count > 0 else 0 }}px;min-height:4px;transition:height .3s"></div>
+            <span style="font-size:11px;color:var(--text-secondary);text-align:center">{{ funnel_labels.get(status, status) }}</span>
+            {% if not loop.first and funnel[loop.index0 - 1][1] > 0 %}
+            <span style="font-size:10px;color:var(--text-muted)">{{ (count / funnel[loop.index0 - 1][1] * 100)|round(1) }}%</span>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3>Отчёт по источникам</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Какие чаты приносят лучшие лиды</p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Чат</th>
+                    <th style="text-align:right">Лидов</th>
+                    <th style="text-align:right">Сделок</th>
+                    <th style="text-align:right">Ср. Score</th>
+                    <th style="text-align:right">Конверсия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in source_data %}
+                <tr>
+                    <td>{{ s.chat[:40] }}</td>
+                    <td style="text-align:right"><strong>{{ s.total }}</strong></td>
+                    <td style="text-align:right">{{ s.deals }}</td>
+                    <td style="text-align:right"><span class="score-badge" style="background:var(--primary)">{{ s.avg_score }}</span></td>
+                    <td style="text-align:right">
+                        <span style="font-weight:600;{% if s.conversion >= 5 %}color:var(--success){% elif s.conversion >= 2 %}color:var(--warning){% else %}color:var(--text-muted){% endif %}">
+                            {{ s.conversion }}%
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not source_data %}
+                <tr><td colspan="5" class="empty-state">Нет данных</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <div class="grid-2">
     <div class="card">
         <h3>Лиды по чатам</h3>

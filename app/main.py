@@ -169,6 +169,54 @@ async def run_anomaly_checker():
             await asyncio.sleep(300)
 
 
+async def run_reminder_checker():
+    """Periodically check for unprocessed leads and send reminders."""
+    from app.bot import check_and_send_reminders, auto_assign_leads
+    while True:
+        try:
+            await auto_assign_leads()
+            await check_and_send_reminders()
+            logger.info("Reminder + auto-assign check completed")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("Reminder checker error: %s", e)
+        await asyncio.sleep(1800)  # every 30 minutes
+
+
+async def run_webhook_dispatcher():
+    """Periodically fire pending webhooks."""
+    import hashlib
+    import hmac
+    import json as _json
+    import aiohttp
+    from app.models import Webhook as WebhookModel
+    from app.repositories import WebhookRepository
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(WebhookModel).where(WebhookModel.is_active == True)
+                )
+                webhooks = result.scalars().all()
+
+            # Webhooks are fired on events, this just cleans up stale ones
+            for wh in webhooks:
+                if wh.fail_count and wh.fail_count > 10:
+                    wh.is_active = False
+                    logger.warning("Deactivated webhook %d (fail_count=%d)", wh.id, wh.fail_count)
+            if webhooks:
+                await session.commit()
+
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("Webhook dispatcher error: %s", e)
+        await asyncio.sleep(300)
+
+
 def run_web():
     config = uvicorn.Config(
         web_app,
@@ -197,7 +245,8 @@ async def main():
     if settings.bot_token:
         tasks.append(run_bot())
         tasks.append(run_anomaly_checker())
-        logger.info("Bot + anomaly checker: started")
+        tasks.append(run_reminder_checker())
+        logger.info("Bot + anomaly checker + reminders: started")
     else:
         logger.warning("Bot: no BOT_TOKEN, skipped")
 

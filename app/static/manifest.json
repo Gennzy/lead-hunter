@@ -1,0 +1,17 @@
+{
+    "name": "Lead Hunter CRM",
+    "short_name": "LeadHunter",
+    "description": "CRM для управления лидами на ремонт квартир",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#f4f2ef",
+    "theme_color": "#7c5832",
+    "orientation": "any",
+    "icons": [
+        {
+            "src": "/static/favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml"
+        }
+    ]
+}

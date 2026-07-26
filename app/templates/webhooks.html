@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Вебхуки — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Вебхуки (Zapier)</h1>
+    <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Добавить вебхук</button>
+</div>
+
+<div class="card">
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Отправляйте данные о лидах во внешние системы (Zapier, Make, n8n). Поддерживаемые события: <code>lead_created</code>, <code>status_change</code>, <code>deal_closed</code></p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>URL</th>
+                    <th>События</th>
+                    <th style="text-align:center">Статус</th>
+                    <th>Последний вызов</th>
+                    <th style="text-align:center">Ошибок</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for wh in webhooks %}
+                <tr>
+                    <td><code style="font-size:12px;word-break:break-all">{{ wh.url[:60] }}{% if wh.url|length > 60 %}...{% endif %}</code></td>
+                    <td>
+                        {% for ev in (wh.events or []) %}
+                        <span class="badge" style="font-size:10px;margin-right:4px">{{ ev }}</span>
+                        {% endfor %}
+                    </td>
+                    <td style="text-align:center">
+                        {% if wh.is_active %}
+                        <span class="badge badge-success">Активен</span>
+                        {% else %}
+                        <span class="badge badge-low">Отключён</span>
+                        {% endif %}
+                    </td>
+                    <td style="font-size:12px;color:var(--text-muted)">{{ wh.last_triggered.strftime('%d.%m %H:%M') if wh.last_triggered else '—' }}</td>
+                    <td style="text-align:center">{{ wh.fail_count or 0 }}</td>
+                    <td>
+                        <form method="post" action="/webhooks/{{ wh.id }}/delete" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить вебхук?')">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not webhooks %}
+                <tr><td colspan="6" class="empty-state">Нет вебхуков. Добавьте URL из Zapier/Make.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="addModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:480px">
+        <div class="modal-header">
+            <h3>Новый вебхук</h3>
+            <button class="modal-close" onclick="document.getElementById('addModal').style.display='none'">&times;</button>
+        </div>
+        <form method="post" action="/webhooks/add" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group"><label>URL *</label><input type="url" name="url" required placeholder="https://hooks.zapier.com/..."></div>
+            <div class="form-group"><label>События (через запятую)</label><input type="text" name="events" value="lead_created,status_change,deal_closed" placeholder="lead_created, status_change, deal_closed"></div>
+            <p style="font-size:11px;color:var(--text-muted);margin-bottom:14px">Secret для подписи X-Webhook-Signature будет сгенерирован автоматически.</p>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('addModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

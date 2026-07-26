@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Шаблоны сообщений — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Шаблоны сообщений</h1>
+    <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Создать шаблон</button>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Название</th>
+                    <th>Категория</th>
+                    <th>Текст</th>
+                    <th style="text-align:center">Использований</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in templates %}
+                <tr>
+                    <td><strong>{{ t.name }}</strong></td>
+                    <td>
+                        {% if t.category == 'first_contact' %}<span class="badge badge-primary">Первый контакт</span>
+                        {% elif t.category == 'follow_up' %}<span class="badge badge-warning">Повторное напоминание</span>
+                        {% elif t.category == 'deal_close' %}<span class="badge badge-success">Закрытие сделки</span>
+                        {% else %}<span class="badge">Общий</span>{% endif %}
+                    </td>
+                    <td class="msg-preview" style="max-width:300px">{{ t.body[:80] }}{% if t.body|length > 80 %}...{% endif %}</td>
+                    <td style="text-align:center">{{ t.use_count or 0 }}</td>
+                    <td>
+                        <form method="post" action="/templates/{{ t.id }}/delete" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить шаблон?')">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not templates %}
+                <tr><td colspan="5" class="empty-state">Нет шаблонов. Создайте первый шаблон для быстрых ответов.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="addModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:520px">
+        <div class="modal-header">
+            <h3>Новый шаблон</h3>
+            <button class="modal-close" onclick="document.getElementById('addModal').style.display='none'">&times;</button>
+        </div>
+        <form method="post" action="/templates/add" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group"><label>Название *</label><input type="text" name="name" required></div>
+            <div class="form-group">
+                <label>Категория</label>
+                <select name="category">
+                    <option value="general">Общий</option>
+                    <option value="first_contact">Первый контакт</option>
+                    <option value="follow_up">Повторное напоминание</option>
+                    <option value="deal_close">Закрытие сделки</option>
+                </select>
+            </div>
+            <div class="form-group"><label>Текст шаблона *</label><textarea name="body" rows="5" required style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical"></textarea></div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('addModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

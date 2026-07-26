@@ -13,11 +13,11 @@ from sqlalchemy import select, func, and_, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models import Lead, User, LeadHistory, BlacklistedUser, Base, engine, async_session, Tenant, TelegramSession
+from app.models import Lead, User, LeadHistory, BlacklistedUser, Base, engine, async_session, Tenant, TelegramSession, MessageTemplate, Webhook
 from app.repositories import (
     TenantRepository, UserRepository, LeadRepository,
     LeadHistoryRepository, BlacklistedUserRepository, TelegramSessionRepository,
-    TenantUsageRepository, ActionLogRepository,
+    TenantUsageRepository, ActionLogRepository, MessageTemplateRepository, WebhookRepository,
 )
 from app.config_manager import TenantConfig
 from app.auth import (
@@ -806,6 +806,7 @@ async def lead_create(
             note=f"Создан пользователем {user.full_name or user.username}",
         )
         await session.commit()
+    await _fire_webhooks(tenant_id, "lead_created", {"lead_id": lead.id, "score": lead.lead_score, "chat": lead.chat_title})
     return RedirectResponse("/leads?success=Лид+создан", status_code=303)
 
 
@@ -863,6 +864,9 @@ async def update_status(
             meta={"from": old_status, "to": lead_status},
         )
         await session.commit()
+    await _fire_webhooks(tenant_id, "status_change", {"lead_id": lead_id, "from": old_status, "to": lead_status})
+    if lead_status == "deal":
+        await _fire_webhooks(tenant_id, "deal_closed", {"lead_id": lead_id, "score": lead.lead_score if lead else 0})
     return RedirectResponse(f"/leads/{lead_id}?success=Статус+изменён", status_code=303)
 
 
@@ -1221,12 +1225,43 @@ async def analytics(request: Request):
     async with async_session() as session:
         leads = LeadRepository(session, tenant_id)
         data = await leads.get_analytics()
-    
+
+        # Funnel data
+        funnel_statuses = ["new", "contacted", "interested", "deal"]
+        funnel_filters = []
+        if tenant_id is not None:
+            funnel_filters.append(Lead.tenant_id == tenant_id)
+        funnel_q = select(Lead.status, func.count(Lead.id)).where(*funnel_filters).group_by(Lead.status)
+        funnel_rows = (await session.execute(funnel_q)).fetchall()
+        funnel_map = {s: c for s, c in funnel_rows}
+        funnel = [(s, funnel_map.get(s, 0)) for s in funnel_statuses]
+
+        # Source report: top chats by deal conversion
+        source_filters = [Lead.status != "deleted"]
+        if tenant_id is not None:
+            source_filters.append(Lead.tenant_id == tenant_id)
+        source_q = (
+            select(Lead.chat_title, func.count(Lead.id), func.avg(Lead.lead_score))
+            .where(*source_filters)
+            .group_by(Lead.chat_title)
+            .order_by(func.count(Lead.id).desc())
+            .limit(15)
+        )
+        source_rows = (await session.execute(source_q)).fetchall()
+        source_data = []
+        for chat_title, count, avg_score in source_rows:
+            deal_filters = [Lead.chat_title == chat_title, Lead.status == "deal"]
+            if tenant_id is not None:
+                deal_filters.append(Lead.tenant_id == tenant_id)
+            deal_count = (await session.execute(select(func.count(Lead.id)).where(*deal_filters))).scalar() or 0
+            conv = (deal_count / count * 100) if count > 0 else 0
+            source_data.append({"chat": chat_title, "total": count, "deals": deal_count, "avg_score": round(avg_score or 0, 1), "conversion": round(conv, 1)})
+
     # Get feedback analysis
     from app.analyzer import analyze_feedback
     feedback_data = await analyze_feedback(tenant_id)
 
-    ctx = await _template_ctx(user, by_chat=data["by_chat"], by_status=data["by_status"], avg_score=data["avg_score"], high_score=data["high_score"], medium_score=data["medium_score"], total=data["total_leads"], feedback_data=feedback_data)
+    ctx = await _template_ctx(user, by_chat=data["by_chat"], by_status=data["by_status"], avg_score=data["avg_score"], high_score=data["high_score"], medium_score=data["medium_score"], total=data["total_leads"], feedback_data=feedback_data, funnel=funnel, source_data=source_data)
     return templates.TemplateResponse(request, "analytics.html", ctx)
 
 
@@ -1595,6 +1630,9 @@ async def update_tenant_config(
     min_lead_score: int = Form(70),
     system_prompt: str = Form(""),
     owner_chat_id: str = Form(""),
+    auto_assign: str = Form("false"),
+    reminder_hours: int = Form(2),
+    escalation_hours: int = Form(4),
     csrf_token: str = Form(""),
 ):
     admin = await get_current_user(request)
@@ -1625,6 +1663,9 @@ async def update_tenant_config(
         config["city"] = sanitize_input(city, 100)
         config["min_lead_score"] = max(0, min(100, min_lead_score))
         config["system_prompt"] = sanitize_input(system_prompt, 8000)
+        config["auto_assign"] = auto_assign == "true"
+        config["reminder_hours"] = max(1, min(48, reminder_hours))
+        config["escalation_hours"] = max(1, min(72, escalation_hours))
         if owner_chat_id and owner_chat_id.strip():
             try:
                 config["owner_chat_id"] = int(owner_chat_id.strip())
@@ -2157,3 +2198,185 @@ async def update_billing_settings(
             await session.commit()
 
     return RedirectResponse("/billing?success=Billing settings updated", status_code=303)
+
+
+async def _fire_webhooks(tenant_id: int, event: str, data: dict):
+    """Fire webhooks for a given event."""
+    import hashlib, hmac, json as _json
+    import aiohttp
+    try:
+        async with async_session() as session:
+            wh_repo = WebhookRepository(session, tenant_id)
+            webhooks = await wh_repo.list_active()
+            for wh in webhooks:
+                if event not in (wh.events or []):
+                    continue
+                try:
+                    payload = _json.dumps({"event": event, "tenant_id": tenant_id, "data": data}, default=str)
+                    headers = {"Content-Type": "application/json"}
+                    if wh.secret:
+                        sig = hmac.new(wh.secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+                        headers["X-Webhook-Signature"] = sig
+                    async with aiohttp.ClientSession() as http:
+                        resp = await http.post(wh.url, data=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
+                        success = resp.status < 400
+                    await wh_repo.mark_triggered(wh.id, success)
+                except Exception as e:
+                    logger.warning("Webhook %d failed: %s", wh.id, e)
+                    await wh_repo.mark_triggered(wh.id, False)
+            await session.commit()
+    except Exception as e:
+        logger.error("Webhook fire error for tenant %d: %s", tenant_id, e)
+
+
+@app.get("/templates", response_class=HTMLResponse)
+async def templates_list(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = MessageTemplateRepository(session, tenant_id)
+        templates_list = await repo.list_active()
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, templates=templates_list, csrf_token=csrf)
+    return templates.TemplateResponse(request, "templates.html", ctx)
+
+
+@app.post("/templates/add")
+async def template_add(
+    request: Request,
+    name: str = Form(...),
+    category: str = Form("general"),
+    body: str = Form(...),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = MessageTemplateRepository(session, tenant_id)
+        await repo.create(name=sanitize_input(name, 200), category=category, body=sanitize_input(body, 5000))
+        await session.commit()
+    return RedirectResponse("/templates?success=Шаблон+создан", status_code=303)
+
+
+@app.post("/templates/{template_id}/delete")
+async def template_delete(request: Request, template_id: int, csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = MessageTemplateRepository(session, tenant_id)
+        tmpl = await repo.get_by_id(template_id)
+        if tmpl:
+            tmpl.is_active = False
+            await session.commit()
+    return RedirectResponse("/templates?success=Шаблон+удалён", status_code=303)
+
+
+@app.get("/kanban", response_class=HTMLResponse)
+async def kanban_page(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        leads_repo = LeadRepository(session, tenant_id)
+        all_leads = await leads_repo.list_all()
+        active_leads = [l for l in all_leads if l.status not in ("deleted", "archive")]
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, leads=active_leads, csrf_token=csrf)
+    return templates.TemplateResponse(request, "kanban.html", ctx)
+
+
+@app.post("/api/kanban/move")
+async def kanban_move(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    body = await request.json()
+    lead_id = body.get("lead_id")
+    new_status = body.get("status")
+    if not lead_id or not new_status:
+        raise HTTPException(status_code=400)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        lead = await leads.get_by_id(lead_id)
+        if not lead:
+            raise HTTPException(status_code=404)
+        old_status = lead.status
+        lead.status = new_status
+        history = LeadHistoryRepository(session, tenant_id)
+        await history.create(
+            lead_id=lead_id, user_id=user.id, action="status_change",
+            old_value=old_status, new_value=new_status,
+            note=f"{user.full_name or user.username} (канбан)",
+        )
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "status_change", lead_id=lead_id,
+            meta={"from": old_status, "to": new_status, "via": "kanban"},
+        )
+        await session.commit()
+    await _fire_webhooks(tenant_id, "status_change", {"lead_id": lead_id, "from": old_status, "to": new_status})
+    return {"ok": True}
+
+
+@app.get("/webhooks", response_class=HTMLResponse)
+async def webhooks_page(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = WebhookRepository(session, tenant_id)
+        wh_list = (await session.execute(select(Webhook).where(Webhook.tenant_id == tenant_id))).scalars().all()
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, webhooks=wh_list, csrf_token=csrf)
+    return templates.TemplateResponse(request, "webhooks.html", ctx)
+
+
+@app.post("/webhooks/add")
+async def webhook_add(
+    request: Request,
+    url: str = Form(...),
+    events: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+    tenant_id = await _get_tenant_id(user)
+    event_list = [e.strip() for e in events.split(",") if e.strip()]
+    import secrets
+    async with async_session() as session:
+        repo = WebhookRepository(session, tenant_id)
+        await repo.create(url=sanitize_input(url, 1024), events=event_list, secret=secrets.token_hex(32))
+        await session.commit()
+    return RedirectResponse("/webhooks?success=Вебхук+создан", status_code=303)
+
+
+@app.post("/webhooks/{webhook_id}/delete")
+async def webhook_delete(request: Request, webhook_id: int, csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = WebhookRepository(session, tenant_id)
+        wh = await repo.get_by_id(webhook_id)
+        if wh:
+            wh.is_active = False
+            await session.commit()
+    return RedirectResponse("/webhooks?success=Вебхук+удалён", status_code=303)

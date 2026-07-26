@@ -10,6 +10,10 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     {% endif %}
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#7c5832">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     {% if theme_color %}
     <style>
         :root {
@@ -71,6 +75,14 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5" rx="1"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
                 <span>Архив</span>
             </a>
+            <a href="/kanban" class="nav-item {% if '/kanban' in request.url.path %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="8" rx="1"/></svg>
+                <span>Канбан</span>
+            </a>
+            <a href="/templates" class="nav-item {% if '/templates' in request.url.path %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span>Шаблоны</span>
+            </a>
             <a href="/analytics" class="nav-item {% if '/analytics' in request.url.path %}active{% endif %}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
                 <span>Аналитика</span>
@@ -100,6 +112,10 @@
             <a href="/activity" class="nav-item {% if '/activity' in request.url.path %}active{% endif %}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
                 <span>Активность</span>
+            </a>
+            <a href="/webhooks" class="nav-item {% if '/webhooks' in request.url.path %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                <span>Вебхуки</span>
             </a>
             {% endif %}
             {% endif %}
@@ -174,6 +190,11 @@
     }
     {% if success %}showToast('{{ success }}', 'success');{% endif %}
     {% if error %}showToast('{{ error }}', 'error');{% endif %}
+    </script>
+    <script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/sw.js').catch(function(){});
+    }
     </script>
 </body>
 </html>

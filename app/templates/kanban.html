@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Канбан — Lead Hunter{% endblock %}
+{% block content %}
+<h1>Канбан-доска</h1>
+<p class="subtitle">Перетаскивайте лиды между статусами</p>
+
+<style>
+.kanban-board{display:flex;gap:16px;overflow-x:auto;padding-bottom:16px;min-height:70vh}
+.kanban-col{min-width:260px;max-width:300px;flex:1;background:var(--bg-subtle);border-radius:var(--r-md);padding:12px;display:flex;flex-direction:column}
+.kanban-col-header{font-weight:700;font-size:13px;padding:8px 10px;margin-bottom:8px;border-radius:var(--r-sm);display:flex;justify-content:space-between;align-items:center}
+.kanban-col-header .count{background:var(--surface);border-radius:var(--r-full);padding:2px 8px;font-size:11px;font-weight:600}
+.kanban-cards{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:100px}
+.kanban-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;cursor:grab;transition:box-shadow .15s,border-color .15s}
+.kanban-card:hover{border-color:var(--primary);box-shadow:var(--sh-sm)}
+.kanban-card.dragging{opacity:.5;border:2px dashed var(--primary)}
+.kanban-card-name{font-weight:600;font-size:13px;margin-bottom:4px}
+.kanban-card-meta{font-size:11px;color:var(--text-muted);display:flex;gap:6px;align-items:center}
+.kanban-card-score{font-weight:700;font-size:11px;padding:1px 6px;border-radius:var(--r-full);color:#fff}
+</style>
+
+<div class="kanban-board" id="kanbanBoard">
+    {% set cols = [('new','Новые','var(--info)'), ('contacted','Контакт','var(--warning)'), ('interested','Заинтересован','var(--success)'), ('deal','Сделки','#16a34a'), ('not_interested','Не интересуют','var(--danger)')] %}
+    {% for status, label, color in cols %}
+    <div class="kanban-col" data-status="{{ status }}">
+        <div class="kanban-col-header" style="background:{{ color }}20;color:{{ color }}">
+            {{ label }}
+            <span class="count">{{ leads|selectattr('status','equalto',status)|list|length }}</span>
+        </div>
+        <div class="kanban-cards" data-status="{{ status }}">
+            {% for lead in leads if lead.status == status %}
+            <div class="kanban-card" draggable="true" data-id="{{ lead.id }}" data-status="{{ lead.status }}">
+                <div class="kanban-card-name">
+                    <a href="/leads/{{ lead.id }}" style="color:var(--text);text-decoration:none">{{ (lead.first_name or lead.username or 'Лид #' ~ lead.id)[:25] }}</a>
+                </div>
+                <div class="kanban-card-meta">
+                    <span class="kanban-card-score" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
+                    <span class="urgency-badge urgency-{{ lead.urgency }}" style="font-size:10px;padding:1px 5px">
+                        {% if lead.urgency == 'high' %}🔥{% elif lead.urgency == 'medium' %}⚡{% else %}💤{% endif %}
+                    </span>
+                    <span>{{ lead.chat_title[:20] }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+(function(){
+    var board = document.getElementById('kanbanBoard');
+    var draggedCard = null;
+
+    board.addEventListener('dragstart', function(e){
+        var card = e.target.closest('.kanban-card');
+        if (!card) return;
+        draggedCard = card;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', card.dataset.id);
+    });
+
+    board.addEventListener('dragend', function(e){
+        var card = e.target.closest('.kanban-card');
+        if (card) card.classList.remove('dragging');
+        draggedCard = null;
+        document.querySelectorAll('.kanban-cards').forEach(function(c){c.style.background=''});
+    });
+
+    board.addEventListener('dragover', function(e){
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        var col = e.target.closest('.kanban-cards');
+        if (col) col.style.background = 'var(--primary-light)';
+    });
+
+    board.addEventListener('dragleave', function(e){
+        var col = e.target.closest('.kanban-cards');
+        if (col) col.style.background = '';
+    });
+
+    board.addEventListener('drop', function(e){
+        e.preventDefault();
+        var col = e.target.closest('.kanban-cards');
+        if (!col || !draggedCard) return;
+        col.style.background = '';
+        var newStatus = col.dataset.status;
+        var leadId = draggedCard.dataset.id;
+        if (draggedCard.dataset.status === newStatus) return;
+
+        fetch('/api/kanban/move', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({lead_id: parseInt(leadId), status: newStatus})
+        }).then(function(r){ return r.json(); }).then(function(d){
+            if (d.ok) {
+                draggedCard.dataset.status = newStatus;
+                col.appendChild(draggedCard);
+                document.querySelectorAll('.kanban-col-header .count').forEach(function(cnt){
+                    var c = cnt.closest('.kanban-col');
+                    var s = c.dataset.status;
+                    cnt.textContent = c.querySelectorAll('.kanban-card[data-status="'+s+'"]').length;
+                });
+                showToast('Статус обновлён', 'success');
+            } else {
+                showToast('Ошибка', 'error');
+            }
+        }).catch(function(){ showToast('Ошибка сети', 'error'); });
+    });
+})();
+</script>
+{% endblock %}

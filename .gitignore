@@ -27,3 +27,4 @@ start.bat
 start_public.bat
 stop.bat
 web_only.bat
+cloud-init.txt
