@@ -3,7 +3,8 @@
 {% block content %}
 <div class="page-toolbar">
     <h1>Лиды <small>{{ total }}</small></h1>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center">
+        <span style="color:var(--text-muted);font-size:12px">{{ new_week }} новых за неделю</span>
         {% if user and user.role != 'viewer' %}
         <a href="/leads/new" class="btn btn-primary">+ Новый лид</a>
         {% endif %}
@@ -70,6 +71,7 @@
                 <th><a href="?sort=name&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Имя</a></th>
                 <th><a href="?&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Чат</a></th>
                 <th style="text-align:center"><a href="?sort=score&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Score</a></th>
+                <th><a href="?sort=urgency&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Срочность</a></th>
                 <th style="text-align:center">Возраст</th>
                 <th>Статус</th>
                 <th>Сообщение</th>
@@ -101,6 +103,12 @@
                 <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
                 <td style="text-align:center">
                     <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
+                </td>
+                <td>
+                    <span class="urgency-badge urgency-{{ lead.urgency }}">
+                        {% if lead.urgency == 'high' %}🔥{% elif lead.urgency == 'medium' %}⚡{% else %}💤{% endif %}
+                        {{ lead.urgency }}
+                    </span>
                 </td>
                 <td style="text-align:center;font-size:12px">
                     {% set age_h = ((now - lead.created_at).total_seconds() / 3600) if lead.created_at and now else 0 %}
@@ -155,7 +163,11 @@
             </tr>
             {% endfor %}
             {% if not leads %}
-            <tr><td colspan="8" class="empty-state">Нет лидов по заданным фильтрам</td></tr>
+            <tr><td colspan="9" class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <div style="font-weight:600;margin-bottom:4px">Нет лидов</div>
+                <div style="font-size:12px">Попробуйте изменить фильтры или создайте новый лид</div>
+            </td></tr>
             {% endif %}
         </tbody>
     </table>

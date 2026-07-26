@@ -370,6 +370,8 @@ h3 { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text);
 .status-not_interested { background: var(--danger-light); color: var(--danger); }
 .status-deal { background: var(--warning-light); color: var(--warning); }
 .status-archive { background: var(--bg-subtle); color: var(--text-muted); }
+.status-deleted { background: var(--danger-light); color: var(--text-muted); }
+.status-in_progress { background: var(--info-light); color: var(--info); }
 
 .badge {
     display: inline-flex;
@@ -825,6 +827,110 @@ code {
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
 }
 
+/* ============ Progress Bars ============ */
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-subtle);
+    border-radius: var(--r-full);
+    overflow: hidden;
+    margin-top: 6px;
+}
+.progress-fill {
+    height: 100%;
+    border-radius: var(--r-full);
+    transition: width .5s var(--ease);
+}
+.progress-fill.ok { background: var(--success); }
+.progress-fill.warn { background: var(--warning); }
+.progress-fill.danger { background: var(--danger); }
+
+/* ============ Toast Notifications ============ */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: var(--z-toast);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-radius: var(--r-md);
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: var(--sh-lg);
+    pointer-events: auto;
+    animation: toastIn .25s var(--ease);
+    max-width: 400px;
+}
+.toast.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+.toast.error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.toast.info { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+/* ============ Attention Card ============ */
+.attention-card {
+    border-left: 3px solid var(--danger);
+    margin-bottom: 20px;
+}
+.attention-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.attention-item:last-child { border-bottom: none; }
+.attention-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 4px;
+}
+.attention-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ============ Urgency Badges ============ */
+.urgency-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: var(--r-full);
+    font-size: 11px;
+    font-weight: 600;
+}
+.urgency-high { background: var(--danger-light); color: var(--danger); }
+.urgency-medium { background: var(--warning-light); color: var(--warning); }
+.urgency-low { background: var(--bg-subtle); color: var(--text-muted); }
+
+/* ============ Limit Warning ============ */
+.limit-warn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 8px;
+}
+.limit-warn.warn { background: var(--warning-light); color: var(--warning); }
+.limit-warn.danger { background: var(--danger-light); color: var(--danger); }
+
 /* ============ Card Lists ============ */
 .card ul {
     padding-left: 18px;
@@ -987,4 +1093,7 @@ code {
     .stats-grid { grid-template-columns: 1fr; }
     .team-member-header { flex-direction: column; }
     .team-member-stats { gap: 14px; }
+    .attention-text { max-width: 200px; }
+    .toast { max-width: 90vw; font-size: 12px; }
+    .toast-container { left: 12px; right: 12px; }
 }

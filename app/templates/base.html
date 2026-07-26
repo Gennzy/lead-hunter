@@ -109,6 +109,8 @@
         {% block content %}{% endblock %}
     </main>
 
+    <div class="toast-container" id="globalToasts"></div>
+
     {% if user and not user.notified_about_logging and user.role != 'super_admin' %}
     <div id="loggingModal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
         <div style="background:#fff;border-radius:12px;padding:28px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
@@ -124,6 +126,18 @@
         document.getElementById('sidebar').classList.toggle('open');
         document.querySelector('.sidebar-overlay').classList.toggle('open');
     }
+    function showToast(message, type) {
+        type = type || 'info';
+        var c = document.getElementById('globalToasts');
+        var t = document.createElement('div');
+        t.className = 'toast ' + type;
+        var icons = {success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>', error: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>', info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'};
+        t.innerHTML = (icons[type] || icons.info) + '<span>' + message + '</span>';
+        c.appendChild(t);
+        setTimeout(function(){if(t.parentNode)t.remove()}, 4000);
+    }
+    {% if success %}showToast('{{ success }}', 'success');{% endif %}
+    {% if error %}showToast('{{ error }}', 'error');{% endif %}
     </script>
 </body>
 </html>
