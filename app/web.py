@@ -1198,17 +1198,24 @@ async def activity_page(
         all_users = await users_repo.list_active()
         user_map = {u.id: u for u in all_users}
 
+        sla_hours = 4
+        if tenant_id is not None:
+            tenant_repo = TenantRepository(session)
+            tenant = await tenant_repo.get_by_id(tenant_id)
+            if tenant and tenant.config:
+                sla_hours = tenant.config.get("sla_hours", 4)
+
         action_log = ActionLogRepository(session, tenant_id)
         summary = await action_log.get_summary_by_user(since)
         timeline = await action_log.get_timeline(since, user_id=user_id, limit=200)
-        anomalies = await action_log.get_write_then_no_status_change(since, hours=4)
+        anomalies = await action_log.get_write_then_no_status_change(since, hours=sla_hours)
 
     csrf = generate_csrf_token(_get_session_id(request))
     ctx = await _template_ctx(
         current_user,
         all_users=all_users, user_map=user_map,
         summary=summary, timeline=timeline, anomalies=anomalies,
-        days=days, selected_user_id=user_id,
+        days=days, selected_user_id=user_id, sla_hours=sla_hours,
         csrf_token=csrf,
     )
     return templates.TemplateResponse(request, "activity.html", ctx)

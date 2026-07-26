@@ -224,7 +224,7 @@ class ActionLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True, index=True)
     action_type = Column(String(50), nullable=False)
     meta = Column(_JSONType, nullable=True)

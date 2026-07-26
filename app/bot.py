@@ -157,8 +157,8 @@ async def cb_archive(callback: CallbackQuery):
             update(Lead).where(Lead.id == lead_id).values(status="archive")
         )
         await ActionLogRepository(session, lead.tenant_id).log(
-            callback.from_user.id, "status_change", lead_id=lead_id,
-            meta={"from": lead.status, "to": "archive"},
+            None, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "archive", "via": "telegram_bot"},
         )
         await session.commit()
     await callback.answer("📦 Архивировано")
@@ -183,8 +183,8 @@ async def cb_not_lead(callback: CallbackQuery):
             update(Lead).where(Lead.id == lead_id).values(status="not_interested")
         )
         await ActionLogRepository(session, lead.tenant_id).log(
-            callback.from_user.id, "status_change", lead_id=lead_id,
-            meta={"from": lead.status, "to": "not_interested"},
+            None, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "not_interested", "via": "telegram_bot"},
         )
         await session.commit()
     await callback.answer("❌ Не лид")
@@ -209,8 +209,8 @@ async def cb_contacted(callback: CallbackQuery):
             update(Lead).where(Lead.id == lead_id).values(status="contacted")
         )
         await ActionLogRepository(session, lead.tenant_id).log(
-            callback.from_user.id, "status_change", lead_id=lead_id,
-            meta={"from": lead.status, "to": "contacted"},
+            None, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "contacted", "via": "telegram_bot"},
         )
         await session.commit()
     await callback.answer("✅ Контактировали")
@@ -235,8 +235,8 @@ async def cb_deal(callback: CallbackQuery):
             update(Lead).where(Lead.id == lead_id).values(status="deal")
         )
         await ActionLogRepository(session, lead.tenant_id).log(
-            callback.from_user.id, "status_change", lead_id=lead_id,
-            meta={"from": lead.status, "to": "deal"},
+            None, "status_change", lead_id=lead_id,
+            meta={"from": lead.status, "to": "deal", "via": "telegram_bot"},
         )
         await session.commit()
     await callback.answer("🤝 Сделка!")

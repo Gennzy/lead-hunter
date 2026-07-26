@@ -642,6 +642,7 @@ class ActionLogRepository(BaseRepository[ActionLog]):
         login_cnt = sa_func.count(sa_case((ActionLog.action_type == "login", 1)))
         click_cnt = sa_func.count(sa_case((ActionLog.action_type == "click_write", 1)))
         status_cnt = sa_func.count(sa_case((ActionLog.action_type == "status_change", 1)))
+        last_login = sa_func.max(sa_case((ActionLog.action_type == "login", ActionLog.created_at), else_=None))
 
         q = (
             select(
@@ -649,36 +650,26 @@ class ActionLogRepository(BaseRepository[ActionLog]):
                 login_cnt.label("login_count"),
                 click_cnt.label("click_write_count"),
                 status_cnt.label("status_change_count"),
+                last_login.label("last_login"),
             )
             .where(*filters)
             .group_by(ActionLog.user_id)
         )
         rows = (await self.session.execute(q)).fetchall()
 
-        result = {}
-        for row in rows:
-            last_login_q = (
-                select(sa_func.max(ActionLog.created_at))
-                .where(
-                    ActionLog.user_id == row.user_id,
-                    ActionLog.action_type == "login",
-                )
-            )
-            if self.tenant_id is not None:
-                last_login_q = last_login_q.where(ActionLog.tenant_id == self.tenant_id)
-            last_login = (await self.session.execute(last_login_q)).scalar()
-
-            result[row.user_id] = {
+        return {
+            row.user_id: {
                 "login_count": row.login_count,
                 "click_write_count": row.click_write_count,
                 "status_change_count": row.status_change_count,
-                "last_login": last_login,
+                "last_login": row.last_login,
             }
-
-        return result
+            for row in rows
+        }
 
     async def get_write_then_no_status_change(self, since: datetime, hours: int = 4):
-        """Find click_write events where no status_change followed within N hours for same lead."""
+        """Find click_write events where no status_change followed within N hours for same lead.
+        Single query using EXISTS subquery instead of N+1 loop."""
         filters = [
             ActionLog.created_at >= since,
             ActionLog.action_type == "click_write",
@@ -687,22 +678,37 @@ class ActionLogRepository(BaseRepository[ActionLog]):
         if self.tenant_id is not None:
             filters.append(ActionLog.tenant_id == self.tenant_id)
 
-        writes = (await self.session.execute(
-            select(ActionLog).where(*filters).order_by(ActionLog.created_at.desc()).limit(200)
-        )).scalars().all()
+        from sqlalchemy import exists as sa_exists
 
-        anomalies = []
-        for w in writes:
-            status_q = select(sa_func.count(ActionLog.id)).where(
-                ActionLog.lead_id == w.lead_id,
+        write_events = (
+            select(ActionLog.lead_id, ActionLog.created_at.label("write_at"))
+            .where(*filters)
+        ).subquery()
+
+        status_exists_q = (
+            select(sa_func.count(ActionLog.id))
+            .where(
+                ActionLog.lead_id == write_events.c.lead_id,
                 ActionLog.action_type == "status_change",
-                ActionLog.created_at > w.created_at,
-                ActionLog.created_at <= w.created_at + timedelta(hours=hours),
+                ActionLog.created_at > write_events.c.write_at,
+                ActionLog.created_at <= write_events.c.write_at + timedelta(hours=hours),
             )
-            if self.tenant_id is not None:
-                status_q = status_q.where(ActionLog.tenant_id == self.tenant_id)
-            count = (await self.session.execute(status_q)).scalar() or 0
-            if count == 0:
-                anomalies.append(w)
+        )
+        if self.tenant_id is not None:
+            status_exists_q = status_exists_q.where(ActionLog.tenant_id == self.tenant_id)
 
-        return anomalies
+        status_scalar = status_exists_q.scalar_subquery()
+
+        q = (
+            select(ActionLog)
+            .join(write_events, and_(
+                ActionLog.lead_id == write_events.c.lead_id,
+                ActionLog.created_at == write_events.c.write_at,
+            ))
+            .where(status_scalar == 0)
+            .order_by(ActionLog.created_at.desc())
+            .limit(50)
+        )
+
+        result = await self.session.execute(q)
+        return list(result.scalars().all())
