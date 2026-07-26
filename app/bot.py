@@ -246,3 +246,63 @@ async def cb_deal(callback: CallbackQuery):
 
 async def start_bot():
     await dp.start_polling(bot)
+
+
+async def send_anomaly_notification(owner_chat_id: int, message: str):
+    """Send anomaly alert to the owner via Telegram."""
+    try:
+        await bot.send_message(owner_chat_id, message, parse_mode="HTML")
+    except Exception as e:
+        logger.error("Failed to send anomaly notification to %d: %s", owner_chat_id, e)
+
+
+async def check_and_notify_anomalies():
+    """Check all tenants for anomalies and send notifications to owners."""
+    from datetime import datetime, timedelta
+    from app.models import Tenant
+
+    async with async_session() as session:
+        result = await session.execute(select(Tenant).where(Tenant.is_active == True))
+        tenants = result.scalars().all()
+
+    for tenant in tenants:
+        try:
+            tenant_config = await TenantConfig.create(tenant.id)
+            owner_chat_id = tenant_config.owner_chat_id
+            if not owner_chat_id:
+                continue
+
+            sla_hours = tenant.config.get("sla_hours", 4) if tenant.config else 4
+            since = datetime.utcnow() - timedelta(hours=sla_hours * 3)
+
+            async with async_session() as session:
+                action_log = ActionLogRepository(session, tenant.id)
+                anomalies = await action_log.get_write_then_no_status_change(since, hours=sla_hours)
+
+            if not anomalies:
+                continue
+
+            user_ids = list({a.user_id for a in anomalies if a.user_id})
+            user_map = {}
+            if user_ids:
+                from app.models import User
+                async with async_session() as session:
+                    result = await session.execute(
+                        select(User).where(User.id.in_(user_ids))
+                    )
+                    user_map = {u.id: u for u in result.scalars().all()}
+
+            for a in anomalies[:5]:
+                user = user_map.get(a.user_id) if a.user_id else None
+                name = user.full_name or user.username if user else "Неизвестный"
+                time_str = a.created_at.strftime("%d.%m %H:%M")
+                text = (
+                    f"⚠️ <b>Аномалия SLA</b>\n\n"
+                    f"Сотрудник <b>{name}</b> нажал «Написать» по лиду "
+                    f"<a href=\"https://77.233.213.224/leads/{a.lead_id}\">#{a.lead_id}</a> "
+                    f"({time_str}), статус не менялся {sla_hours}+ ч."
+                )
+                await send_anomaly_notification(owner_chat_id, text)
+
+        except Exception as e:
+            logger.error("Anomaly check failed for tenant %d: %s", tenant.id, e)

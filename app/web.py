@@ -500,7 +500,7 @@ async def lead_create_form(request: Request):
 
 
 @app.get("/leads/{lead_id}", response_class=HTMLResponse)
-async def lead_detail(request: Request, lead_id: int):
+async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -528,7 +528,7 @@ async def lead_detail(request: Request, lead_id: int):
         prev_id, next_id = await leads.get_prev_next(lead_id)
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf)
+    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error)
     return templates.TemplateResponse(request, "lead_detail.html", ctx)
 
 
@@ -708,6 +708,7 @@ async def update_status(
     request: Request,
     lead_id: int,
     lead_status: str = Form(..., alias="status"),
+    deal_comment: str = Form(""),
     csrf_token: str = Form(""),
 ):
     user = await get_current_user(request)
@@ -720,6 +721,9 @@ async def update_status(
     valid_statuses = {"new", "contacted", "interested", "not_interested", "deal", "archive", "deleted"}
     if lead_status not in valid_statuses:
         return HTMLResponse(content="Invalid status", status_code=400)
+
+    if lead_status == "deal" and not deal_comment.strip():
+        return RedirectResponse(f"/leads/{lead_id}?error=Для статуса «Сделка» обязателен комментарий", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
 
@@ -737,13 +741,16 @@ async def update_status(
         lead.status = lead_status
 
         history = LeadHistoryRepository(session, tenant_id)
+        history_note = f"{user.full_name or user.username} изменил статус"
+        if deal_comment.strip():
+            history_note += f": {deal_comment.strip()}"
         await history.create(
             lead_id=lead_id,
             user_id=user.id,
             action="status_change",
             old_value=old_status,
             new_value=lead_status,
-            note=f"{user.full_name or user.username} изменил статус",
+            note=history_note,
         )
         await ActionLogRepository(session, tenant_id).log(
             user.id, "status_change", lead_id=lead_id,
@@ -1209,12 +1216,14 @@ async def activity_page(
         summary = await action_log.get_summary_by_user(since)
         timeline = await action_log.get_timeline(since, user_id=user_id, limit=200)
         anomalies = await action_log.get_write_then_no_status_change(since, hours=sla_hours)
+        median_data = await action_log.get_median_time_to_first_action(since)
 
     csrf = generate_csrf_token(_get_session_id(request))
     ctx = await _template_ctx(
         current_user,
         all_users=all_users, user_map=user_map,
         summary=summary, timeline=timeline, anomalies=anomalies,
+        median_data=median_data,
         days=days, selected_user_id=user_id, sla_hours=sla_hours,
         csrf_token=csrf,
     )

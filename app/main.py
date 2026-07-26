@@ -154,6 +154,21 @@ async def run_bot():
         logger.error("Bot failed: %s", e)
 
 
+async def run_anomaly_checker():
+    """Periodically check for anomalies and send notifications."""
+    from app.bot import check_and_notify_anomalies
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await check_and_notify_anomalies()
+            logger.info("Anomaly check completed")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("Anomaly checker error: %s", e)
+            await asyncio.sleep(300)
+
+
 def run_web():
     config = uvicorn.Config(
         web_app,
@@ -181,7 +196,8 @@ async def main():
 
     if settings.bot_token:
         tasks.append(run_bot())
-        logger.info("Bot: started")
+        tasks.append(run_anomaly_checker())
+        logger.info("Bot + anomaly checker: started")
     else:
         logger.warning("Bot: no BOT_TOKEN, skipped")
 

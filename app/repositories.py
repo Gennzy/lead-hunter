@@ -667,9 +667,57 @@ class ActionLogRepository(BaseRepository[ActionLog]):
             for row in rows
         }
 
+    async def get_median_time_to_first_action(self, since: datetime):
+        """Median time from lead creation to first click_write per user."""
+        filters = [
+            ActionLog.created_at >= since,
+            ActionLog.action_type == "click_write",
+            ActionLog.lead_id.isnot(None),
+            ActionLog.user_id.isnot(None),
+        ]
+        if self.tenant_id is not None:
+            filters.append(ActionLog.tenant_id == self.tenant_id)
+
+        writes = (await self.session.execute(
+            select(ActionLog).where(*filters)
+        )).scalars().all()
+
+        if not writes:
+            return {}
+
+        from app.models import Lead
+        lead_ids = list({w.lead_id for w in writes})
+        lead_filters = [Lead.id.in_(lead_ids)]
+        if self.tenant_id is not None:
+            lead_filters.append(Lead.tenant_id == self.tenant_id)
+        leads_result = await self.session.execute(
+            select(Lead.id, Lead.created_at).where(*lead_filters)
+        )
+        lead_map = {row.id: row.created_at for row in leads_result.fetchall()}
+
+        from collections import defaultdict
+        user_times: dict[int, list[float]] = defaultdict(list)
+        for w in writes:
+            lead_created = lead_map.get(w.lead_id)
+            if lead_created and w.user_id:
+                delta = (w.created_at - lead_created).total_seconds() / 3600
+                if delta >= 0:
+                    user_times[w.user_id].append(delta)
+
+        result = {}
+        for uid, times in user_times.items():
+            times.sort()
+            n = len(times)
+            if n % 2 == 0:
+                median = (times[n // 2 - 1] + times[n // 2]) / 2
+            else:
+                median = times[n // 2]
+            result[uid] = {"median_hours": round(median, 1), "count": n}
+
+        return result
+
     async def get_write_then_no_status_change(self, since: datetime, hours: int = 4):
-        """Find click_write events where no status_change followed within N hours for same lead.
-        Single query using EXISTS subquery instead of N+1 loop."""
+        """Find click_write events where no status_change followed within N hours for same lead."""
         filters = [
             ActionLog.created_at >= since,
             ActionLog.action_type == "click_write",
@@ -678,37 +726,40 @@ class ActionLogRepository(BaseRepository[ActionLog]):
         if self.tenant_id is not None:
             filters.append(ActionLog.tenant_id == self.tenant_id)
 
-        from sqlalchemy import exists as sa_exists
+        writes = (await self.session.execute(
+            select(ActionLog).where(*filters).order_by(ActionLog.created_at.desc()).limit(200)
+        )).scalars().all()
 
-        write_events = (
-            select(ActionLog.lead_id, ActionLog.created_at.label("write_at"))
-            .where(*filters)
-        ).subquery()
+        if not writes:
+            return []
 
-        status_exists_q = (
-            select(sa_func.count(ActionLog.id))
-            .where(
-                ActionLog.lead_id == write_events.c.lead_id,
-                ActionLog.action_type == "status_change",
-                ActionLog.created_at > write_events.c.write_at,
-                ActionLog.created_at <= write_events.c.write_at + timedelta(hours=hours),
-            )
-        )
+        lead_ids = list({w.lead_id for w in writes})
+        write_map: dict[int, list[ActionLog]] = {}
+        for w in writes:
+            write_map.setdefault(w.lead_id, []).append(w)
+
+        sc_filters = [
+            ActionLog.action_type == "status_change",
+            ActionLog.lead_id.in_(lead_ids),
+        ]
         if self.tenant_id is not None:
-            status_exists_q = status_exists_q.where(ActionLog.tenant_id == self.tenant_id)
+            sc_filters.append(ActionLog.tenant_id == self.tenant_id)
+        status_changes = (await self.session.execute(
+            select(ActionLog).where(*sc_filters)
+        )).scalars().all()
 
-        status_scalar = status_exists_q.scalar_subquery()
+        change_map: dict[int, list[datetime]] = {}
+        for sc in status_changes:
+            change_map.setdefault(sc.lead_id, []).append(sc.created_at)
 
-        q = (
-            select(ActionLog)
-            .join(write_events, and_(
-                ActionLog.lead_id == write_events.c.lead_id,
-                ActionLog.created_at == write_events.c.write_at,
-            ))
-            .where(status_scalar == 0)
-            .order_by(ActionLog.created_at.desc())
-            .limit(50)
-        )
+        anomalies = []
+        for w in writes:
+            changes = change_map.get(w.lead_id, [])
+            has_change = any(
+                w.created_at < c <= w.created_at + timedelta(hours=hours)
+                for c in changes
+            )
+            if not has_change:
+                anomalies.append(w)
 
-        result = await self.session.execute(q)
-        return list(result.scalars().all())
+        return anomalies

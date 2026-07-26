@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Лид #{{ lead.id }} — Lead Hunter{% endblock %}
 {% block content %}
+{% if error %}
+<div style="background:#fef2f2;color:#dc2626;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid #fecaca">{{ error }}</div>
+{% endif %}
 <div class="page-toolbar">
     <a href="/leads" style="color:var(--primary);font-size:13.5px;font-weight:500">← Назад к списку</a>
     <div style="display:flex;gap:6px">
@@ -90,9 +93,10 @@
                 <dt>Статус</dt>
                 <dd>
                     {% if user and user.role != 'viewer' %}
-                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form">
+                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form" id="statusForm">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <select name="status" onchange="this.form.submit()" style="width:100%">
+                        <input type="hidden" name="deal_comment" value="" id="statusDealComment">
+                        <select name="status" onchange="if(this.value==='deal'){var c=prompt('Комментарий к сделке (обязательно):');if(c!==null&&c.trim()){document.getElementById('statusDealComment').value=c;this.form.submit()}else if(c!==null){alert('Комментарий обязателен');this.value='{{ lead.status }}'}else{this.value='{{ lead.status }}'}}else{this.form.submit()}" style="width:100%">
                             <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
                             <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контактировали</option>
                             <option value="missed_call" {% if lead.status == 'missed_call' %}selected{% endif %}>Недозвон</option>
@@ -141,10 +145,11 @@
                     <input type="hidden" name="status" value="in_progress">
                     <button type="submit" class="btn btn-sm {% if lead.status == 'in_progress' %}btn-info{% else %}btn-outline{% endif %}" style="font-size:11px">⏳ В работе</button>
                 </form>
-                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline" id="dealForm">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="deal">
-                    <button type="submit" class="btn btn-sm {% if lead.status == 'deal' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">💰 Сделка</button>
+                    <input type="hidden" name="deal_comment" value="" id="dealCommentInput">
+                    <button type="button" onclick="var c=prompt('Комментарий к сделке (обязательно):');if(c!==null&&c.trim()){document.getElementById('dealCommentInput').value=c;this.closest('form').submit()}else if(c!==null){alert('Комментарий обязателен для статуса «Сделка»')}" class="btn btn-sm {% if lead.status == 'deal' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">💰 Сделка</button>
                 </form>
                 <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

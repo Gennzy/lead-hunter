@@ -38,11 +38,13 @@
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Входов</th>
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Написать</th>
                     <th style="text-align:center;padding:8px 10px;font-weight:600">Смен статуса</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Медиана до действия</th>
                 </tr>
             </thead>
             <tbody>
                 {% for u in all_users %}
                 {% set s = summary.get(u.id, {}) %}
+                {% set m = median_data.get(u.id, {}) %}
                 <tr style="border-bottom:1px solid var(--border)">
                     <td style="padding:8px 10px">
                         <a href="/activity?days={{ days }}&user_id={{ u.id }}" style="color:var(--primary);text-decoration:none;font-weight:500">{{ u.full_name or u.username }}</a>
@@ -51,6 +53,12 @@
                     <td style="padding:8px 10px;text-align:center">{{ s.get('login_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('click_write_count', 0) }}</td>
                     <td style="padding:8px 10px;text-align:center">{{ s.get('status_change_count', 0) }}</td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if m %}
+                        <span style="font-weight:600;{% if m.median_hours < 1 %}color:#16a34a{% elif m.median_hours < 4 %}color:#d97706{% else %}color:#dc2626{% endif %}">{{ m.median_hours }} ч</span>
+                        <span style="color:var(--text-secondary);font-size:11px">({{ m.count }})</span>
+                        {% else %}—{% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
