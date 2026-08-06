@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Табель рабочего времени — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Табель рабочего времени</h1>
+    <form method="get" action="/team/timesheet" style="display:flex;gap:8px">
+        <input type="date" name="date" value="{{ current_date }}" class="form-input">
+        <button type="submit" class="btn btn-outline">Показать</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Сотрудник</th>
+                    <th>Вход</th>
+                    <th>Выход</th>
+                    <th>Часы</th>
+                    <th>Действий</th>
+                    <th>Статус</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in ws_data %}
+                <tr>
+                    <td><strong>{{ item.user.full_name or item.user.username if item.user else '—' }}</strong></td>
+                    <td>{{ (item.session.login_at|msk).strftime('%H:%M') if item.session.login_at else '—' }}</td>
+                    <td>{{ (item.session.logout_at|msk).strftime('%H:%M') if item.session.logout_at else '—' }}</td>
+                    <td>{{ item.hours }}ч</td>
+                    <td>{{ item.session.actions_count or 0 }}</td>
+                    <td>
+                        {% if item.session.logout_at %}
+                        <span class="badge">Завершён</span>
+                        {% elif item.session.login_at %}
+                        <span class="badge badge-success">На смене</span>
+                        {% else %}
+                        <span class="badge">Не приходил</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not ws_data %}
+                <tr><td colspan="6" class="empty-state">Нет записей за эту дату</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

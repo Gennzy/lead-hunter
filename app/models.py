@@ -66,6 +66,10 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     notified_about_logging = Column(Boolean, default=False)
+    max_leads = Column(Integer, default=50)  # max active leads
+    commission_rate = Column(Float, default=0.0)  # % from closed deals
+    weight = Column(Float, default=1.0)  # for weighted auto-assignment
+    telegram_id = Column(Integer, nullable=True)  # for bot notifications
     created_at = Column(DateTime, default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
@@ -108,6 +112,7 @@ class Lead(Base):
     is_notified = Column(Integer, default=0)
     feedback = Column(String(10), nullable=True)  # "useful" or "not_useful"
     feedback_reason = Column(String(50), nullable=True)  # spam, off_topic, duplicate, found_crew
+    last_responded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -260,6 +265,23 @@ class MessageTemplate(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class LeadSource(Base):
+    __tablename__ = "lead_sources"
+    __table_args__ = (
+        Index("ix_lead_sources_tenant_id", "tenant_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(100), nullable=False)  # "vk", "avito", "cian", "forumhouse"
+    display_name = Column(String(200), nullable=True)
+    is_active = Column(Boolean, default=True)
+    config = Column(_JSONType, default=dict)  # source-specific config (API keys, groups, etc.)
+    last_synced = Column(DateTime, nullable=True)
+    leads_found = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+
+
 class Webhook(Base):
     __tablename__ = "webhooks"
     __table_args__ = (
@@ -274,4 +296,95 @@ class Webhook(Base):
     is_active = Column(Boolean, default=True)
     last_triggered = Column(DateTime, nullable=True)
     fail_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+
+
+class EmployeeTarget(Base):
+    __tablename__ = "employee_targets"
+    __table_args__ = (
+        Index("ix_employee_targets_user_id", "user_id"),
+        Index("ix_employee_targets_period", "user_id", "period"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    period = Column(String(7), nullable=False)  # "2026-08"
+    target_leads = Column(Integer, default=0)
+    target_deals = Column(Integer, default=0)
+    target_revenue = Column(Float, default=0.0)
+    actual_leads = Column(Integer, default=0)
+    actual_deals = Column(Integer, default=0)
+    actual_revenue = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=func.now())
+
+
+class Commission(Base):
+    __tablename__ = "commissions"
+    __table_args__ = (
+        Index("ix_commissions_user_id", "user_id"),
+        Index("ix_commissions_period", "user_id", "period"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True)
+    period = Column(String(7), nullable=False)  # "2026-08"
+    deal_amount = Column(Float, default=0.0)
+    commission_rate = Column(Float, default=0.0)
+    commission_amount = Column(Float, default=0.0)
+    bonus_amount = Column(Float, default=0.0)
+    is_paid = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class Penalty(Base):
+    __tablename__ = "penalties"
+    __table_args__ = (
+        Index("ix_penalties_user_id", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reason = Column(String(50), nullable=False)  # missed_lead, slow_response, manual
+    amount = Column(Float, default=0.0)
+    description = Column(Text, nullable=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class WorkSession(Base):
+    __tablename__ = "work_sessions"
+    __table_args__ = (
+        Index("ix_work_sessions_user_id", "user_id"),
+        Index("ix_work_sessions_period", "user_id", "date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    date = Column(String(10), nullable=False)  # "2026-08-06"
+    login_at = Column(DateTime, nullable=True)
+    logout_at = Column(DateTime, nullable=True)
+    total_seconds = Column(Integer, default=0)
+    actions_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+
+
+class ResponseTimeLog(Base):
+    __tablename__ = "response_time_logs"
+    __table_args__ = (
+        Index("ix_response_time_logs_user_id", "user_id"),
+        Index("ix_response_time_logs_lead_id", "lead_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    assigned_at = Column(DateTime, nullable=False)
+    first_response_at = Column(DateTime, nullable=True)
+    response_seconds = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=func.now())

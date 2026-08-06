@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Аналитика сотрудников — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Аналитика по сотрудникам</h1>
+    <form method="get" action="/team/analytics" style="display:flex;gap:8px">
+        <select name="days" class="form-input">
+            <option value="7" {% if days == 7 %}selected{% endif %}>7 дней</option>
+            <option value="30" {% if days == 30 %}selected{% endif %}>30 дней</option>
+            <option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option>
+        </select>
+        <button type="submit" class="btn btn-outline">Показать</button>
+    </form>
+</div>
+
+<div class="stats-grid" style="margin-bottom:16px">
+    {% for item in analytics_data %}
+    <div class="stat-card" style="cursor:pointer" onclick="document.getElementById('detail-{{ item.user.id }}').scrollIntoView({behavior:'smooth'})">
+        <div class="stat-value">{{ item.avg_response_label }}</div>
+        <div class="stat-label">{{ item.user.full_name or item.user.username }}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">{{ item.deals }} сделок / {{ item.total_leads }} лидов</div>
+    </div>
+    {% endfor %}
+</div>
+
+{% for item in analytics_data %}
+<div class="card" id="detail-{{ item.user.id }}" style="margin-bottom:16px">
+    <h3>{{ item.user.full_name or item.user.username }}</h3>
+    <div class="stats-grid" style="margin-bottom:12px">
+        <div class="stat-card">
+            <div class="stat-value">{{ item.avg_response_label }}</div>
+            <div class="stat-label">Среднее время ответа</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ item.total_leads }}</div>
+            <div class="stat-label">Всего лидов</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ item.deals }}</div>
+            <div class="stat-label">Сделок</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ item.conversion }}%</div>
+            <div class="stat-label">Конверсия</div>
+        </div>
+    </div>
+
+    {% if item.top_sources %}
+    <h4 style="margin-bottom:8px">Топ источники</h4>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        {% for src in item.top_sources %}
+        <span class="badge" style="font-size:12px">{{ src.name }} ({{ src.count }})</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% if not analytics_data %}
+<div class="card">
+    <p class="empty-state">Нет данных для отображения</p>
+</div>
+{% endif %}
+{% endblock %}

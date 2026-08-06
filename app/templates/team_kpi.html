@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}KPI сотрудников — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>KPI и цели — {{ current_period }}</h1>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Сотрудник</th>
+                    <th>Цель лиды</th>
+                    <th>Факт лиды</th>
+                    <th>Прогресс</th>
+                    <th>Цель сделки</th>
+                    <th>Факт сделки</th>
+                    <th>Цель выручка</th>
+                    <th>Факт выручка</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in kpi_data %}
+                <tr>
+                    <td><strong>{{ item.user.full_name or item.user.username }}</strong></td>
+                    <td>{{ item.target.target_leads }}</td>
+                    <td>{{ item.target.actual_leads }}</td>
+                    <td>
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <div style="flex:1;height:8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">
+                                <div style="height:100%;width:{{ [item.leads_pct, 100]|min }}%;background:{% if item.leads_pct >= 100 %}var(--color-success){% elif item.leads_pct >= 50 %}var(--color-accent){% else %}var(--color-danger){% endif %};border-radius:4px"></div>
+                            </div>
+                            <span style="font-size:12px;min-width:40px">{{ item.leads_pct }}%</span>
+                        </div>
+                    </td>
+                    <td>{{ item.target.target_deals }}</td>
+                    <td>{{ item.target.actual_deals }}</td>
+                    <td>{{ "{:,.0f}".format(item.target.target_revenue) }} ₽</td>
+                    <td>{{ "{:,.0f}".format(item.target.actual_revenue) }} ₽</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="openTargetModal({{ item.user.id }}, '{{ item.user.full_name or item.user.username }}', {{ item.target.target_leads }}, {{ item.target.target_deals }}, {{ item.target.target_revenue }})">Настроить</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="targetModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:500px">
+        <div class="modal-header">
+            <h3>Настроить цель: <span id="targetUserName"></span></h3>
+            <button class="modal-close" onclick="document.getElementById('targetModal').style.display='none'">&times;</button>
+        </div>
+        <form method="post" action="/team/kpi/set-target" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="user_id" id="targetUserId">
+            <input type="hidden" name="period" value="{{ current_period }}">
+
+            <div class="form-group">
+                <label>Цель по лидам</label>
+                <input type="number" name="target_leads" id="targetLeads" min="0" value="0">
+            </div>
+            <div class="form-group">
+                <label>Цель по сделкам</label>
+                <input type="number" name="target_deals" id="targetDeals" min="0" value="0">
+            </div>
+            <div class="form-group">
+                <label>Цель по выручке (₽)</label>
+                <input type="number" name="target_revenue" id="targetRevenue" min="0" value="0" step="1000">
+            </div>
+
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('targetModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Сохранить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openTargetModal(userId, name, leads, deals, revenue) {
+    document.getElementById('targetUserId').value = userId;
+    document.getElementById('targetUserName').textContent = name;
+    document.getElementById('targetLeads').value = leads;
+    document.getElementById('targetDeals').value = deals;
+    document.getElementById('targetRevenue').value = revenue;
+    document.getElementById('targetModal').style.display = 'flex';
+}
+</script>
+{% endblock %}

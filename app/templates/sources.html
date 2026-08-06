@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Источники лидов — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Источники лидов</h1>
+    <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Добавить источник</button>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Источник</th>
+                    <th>Статус</th>
+                    <th>Найдено лидов</th>
+                    <th>Последний синк</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sources %}
+                <tr>
+                    <td>
+                        <strong>{{ s.display_name or s.name }}</strong>
+                        <div style="font-size:11px;color:var(--text-muted)">{{ s.name }}</div>
+                    </td>
+                    <td>
+                        {% if s.is_active %}
+                        <span class="badge badge-success">Активен</span>
+                        {% else %}
+                        <span class="badge">Выкл</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ s.leads_found or 0 }}</td>
+                    <td>{{ (s.last_synced|msk).strftime('%d.%m %H:%M') if s.last_synced else '—' }}</td>
+                    <td>
+                        <form method="post" action="/sources/{{ s.id }}/toggle" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm btn-outline">{{ 'Выкл' if s.is_active else 'Вкл' }}</button>
+                        </form>
+                        <form method="post" action="/sources/{{ s.id }}/delete" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить источник?')">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not sources %}
+                <tr><td colspan="5" class="empty-state">Нет источников. Добавьте первый источник для поиска лидов.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+    <h3>Как это работает</h3>
+    <ul style="font-size:13px;line-height:1.8;color:var(--text-secondary)">
+        <li><strong>VK</strong> — мониторинг групп по ремонту, поиск посты с ключевыми словами</li>
+        <li><strong>Avito</strong> — поиск объявлений "ищу бригаду", "нужен ремонт"</li>
+        <li><strong>CIAN</strong> — новые покупатели квартир без отделки (нужен ремонт)</li>
+        <li><strong>ForumHouse</strong> — обсуждения на строительных форумах</li>
+    </ul>
+    <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Скраперы запускаются автоматически каждые 30 минут.</p>
+</div>
+
+<div id="addModal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:600px">
+        <div class="modal-header">
+            <h3>Добавить источник</h3>
+            <button class="modal-close" onclick="document.getElementById('addModal').style.display='none'">&times;</button>
+        </div>
+        <form method="post" action="/sources/add" style="padding:20px 24px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="form-group">
+                <label>Тип источника *</label>
+                <select name="name" id="sourceType" onchange="toggleSourceFields()" required>
+                    <option value="vk">VK (ВКонтакте)</option>
+                    <option value="avito">Avito</option>
+                    <option value="cian">CIAN</option>
+                    <option value="forumhouse">ForumHouse</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Название</label>
+                <input type="text" name="display_name" placeholder="Мой VK мониторинг">
+            </div>
+
+            <!-- VK fields -->
+            <div id="vkFields">
+                <div class="form-group">
+                    <label>Access Token VK</label>
+                    <input type="text" name="vk_token" placeholder="VK API token">
+                </div>
+                <div class="form-group">
+                    <label>ID групп (через запятую)</label>
+                    <input type="text" name="vk_groups" placeholder="12345678, 87654321">
+                </div>
+            </div>
+
+            <!-- Avito fields -->
+            <div id="avitoFields" style="display:none">
+                <div class="form-group">
+                    <label>Город</label>
+                    <input type="text" name="avito_city" placeholder="moskva">
+                </div>
+            </div>
+
+            <!-- CIAN fields -->
+            <div id="cianFields" style="display:none">
+                <div class="form-group">
+                    <label>API Key CIAN</label>
+                    <input type="text" name="cian_api_key" placeholder="CIAN API key">
+                </div>
+                <div class="form-group">
+                    <label>Город</label>
+                    <input type="text" name="cian_city" placeholder="moscow">
+                </div>
+            </div>
+
+            <!-- ForumHouse fields -->
+            <div id="forumhouseFields" style="display:none">
+                <div class="form-group">
+                    <label>Разделы (через запятую)</label>
+                    <input type="text" name="forumhouse_sections" placeholder="remont-i-otdelka, stroitelstvo">
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline" onclick="document.getElementById('addModal').style.display='none'">Отмена</button>
+                <button type="submit" class="btn btn-primary">Добавить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function toggleSourceFields() {
+    var type = document.getElementById('sourceType').value;
+    document.getElementById('vkFields').style.display = type === 'vk' ? 'block' : 'none';
+    document.getElementById('avitoFields').style.display = type === 'avito' ? 'block' : 'none';
+    document.getElementById('cianFields').style.display = type === 'cian' ? 'block' : 'none';
+    document.getElementById('forumhouseFields').style.display = type === 'forumhouse' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

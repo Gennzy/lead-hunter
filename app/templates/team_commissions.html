@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Комиссии — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1>Комиссии и бонусы</h1>
+    <form method="get" action="/team/commissions" style="display:flex;gap:8px">
+        <input type="month" name="period" value="{{ current_period }}" class="form-input">
+        <button type="submit" class="btn btn-outline">Показать</button>
+    </form>
+</div>
+
+<div class="stats-grid" style="margin-bottom:16px">
+    <div class="stat-card">
+        <div class="stat-value">{{ "{:,.0f}".format(total_commission) }} ₽</div>
+        <div class="stat-label">Комиссии</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ "{:,.0f}".format(total_bonus) }} ₽</div>
+        <div class="stat-label">Бонусы</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">-{{ "{:,.0f}".format(total_penalties) }} ₽</div>
+        <div class="stat-label">Штрафы</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Сводка по сотрудникам</h3>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Сотрудник</th>
+                    <th>Сделок</th>
+                    <th>Сумма сделок</th>
+                    <th>Комиссия</th>
+                    <th>Бонусы</th>
+                    <th>Штрафы</th>
+                    <th>Итого</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in comm_data %}
+                <tr>
+                    <td><strong>{{ item.user.full_name or item.user.username if item.user else '—' }}</strong></td>
+                    <td>{{ item.deals_count }}</td>
+                    <td>{{ "{:,.0f}".format(item.total_deals) }} ₽</td>
+                    <td>{{ "{:,.0f}".format(item.total_commission) }} ₽</td>
+                    <td style="color:var(--color-success)">+{{ "{:,.0f}".format(item.total_bonus) }} ₽</td>
+                    <td style="color:var(--color-danger)">-{{ "{:,.0f}".format(item.penalties_total) }} ₽</td>
+                    <td><strong>{{ "{:,.0f}".format(item.net) }} ₽</strong></td>
+                </tr>
+                {% endfor %}
+                {% if not comm_data %}
+                <tr><td colspan="7" class="empty-state">Нет данных за этот период</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+    <h3>Начислить штраф</h3>
+    <form method="post" action="/team/commissions/add-penalty" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-group" style="flex:1;min-width:200px">
+            <label>Сотрудник</label>
+            <select name="user_id" required>
+                {% for item in comm_data %}
+                <option value="{{ item.user.id }}">{{ item.user.full_name or item.user.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Причина</label>
+            <select name="reason" required>
+                <option value="missed_lead">Пропущен лид</option>
+                <option value="slow_response">Медленный ответ</option>
+                <option value="manual">Ручное</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Сумма (₽)</label>
+            <input type="number" name="amount" min="0" step="100" required>
+        </div>
+        <div class="form-group" style="flex:1;min-width:200px">
+            <label>Описание</label>
+            <input type="text" name="description">
+        </div>
+        <button type="submit" class="btn btn-danger">Начислить штраф</button>
+    </form>
+</div>
+{% endblock %}

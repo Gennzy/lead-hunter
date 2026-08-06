@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage, ActionLog,
-    MessageTemplate, Webhook,
+    MessageTemplate, Webhook, LeadSource, EmployeeTarget, Commission, Penalty, WorkSession, ResponseTimeLog,
 )
 
 ModelType = TypeVar("ModelType")
@@ -922,3 +922,260 @@ class WebhookRepository(BaseRepository):
             else:
                 wh.fail_count = 0
         return wh
+
+
+class EmployeeTargetRepository(BaseRepository):
+    model = EmployeeTarget
+
+    async def get_or_create(self, user_id: int, period: str):
+        q = select(EmployeeTarget).where(
+            EmployeeTarget.user_id == user_id,
+            EmployeeTarget.period == period,
+        )
+        if self.tenant_id is not None:
+            q = q.where(EmployeeTarget.tenant_id == self.tenant_id)
+        target = (await self.session.execute(q)).scalar_one_or_none()
+        if not target:
+            target = EmployeeTarget(
+                tenant_id=self.tenant_id,
+                user_id=user_id,
+                period=period,
+            )
+            self.session.add(target)
+            await self.session.flush()
+        return target
+
+    async def update_actuals(self, user_id: int, period: str, leads: int, deals: int, revenue: float):
+        target = await self.get_or_create(user_id, period)
+        target.actual_leads = leads
+        target.actual_deals = deals
+        target.actual_revenue = revenue
+        return target
+
+    async def list_all(self, period: str = None):
+        q = select(EmployeeTarget)
+        if self.tenant_id is not None:
+            q = q.where(EmployeeTarget.tenant_id == self.tenant_id)
+        if period:
+            q = q.where(EmployeeTarget.period == period)
+        return (await self.session.execute(q)).scalars().all()
+
+
+class CommissionRepository(BaseRepository):
+    model = Commission
+
+    async def create(self, user_id: int, lead_id: int, period: str, deal_amount: float, rate: float, bonus: float = 0):
+        comm = Commission(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            lead_id=lead_id,
+            period=period,
+            deal_amount=deal_amount,
+            commission_rate=rate,
+            commission_amount=deal_amount * rate / 100,
+            bonus_amount=bonus,
+        )
+        self.session.add(comm)
+        await self.session.flush()
+        return comm
+
+    async def list_by_user(self, user_id: int, period: str = None):
+        q = select(Commission).where(Commission.user_id == user_id)
+        if self.tenant_id is not None:
+            q = q.where(Commission.tenant_id == self.tenant_id)
+        if period:
+            q = q.where(Commission.period == period)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def list_all(self, period: str = None):
+        q = select(Commission)
+        if self.tenant_id is not None:
+            q = q.where(Commission.tenant_id == self.tenant_id)
+        if period:
+            q = q.where(Commission.period == period)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_summary(self, period: str):
+        from sqlalchemy import func as sqlfunc
+        q = select(
+            Commission.user_id,
+            sqlfunc.sum(Commission.commission_amount).label("total_commission"),
+            sqlfunc.sum(Commission.bonus_amount).label("total_bonus"),
+            sqlfunc.sum(Commission.deal_amount).label("total_deals"),
+            sqlfunc.count(Commission.id).label("deals_count"),
+        ).where(Commission.period == period)
+        if self.tenant_id is not None:
+            q = q.where(Commission.tenant_id == self.tenant_id)
+        q = q.group_by(Commission.user_id)
+        return (await self.session.execute(q)).all()
+
+    async def mark_paid(self, commission_id: int):
+        comm = await self.session.get(Commission, commission_id)
+        if comm:
+            comm.is_paid = True
+        return comm
+
+
+class PenaltyRepository(BaseRepository):
+    model = Penalty
+
+    async def create(self, user_id: int, reason: str, amount: float, description: str = None, lead_id: int = None):
+        p = Penalty(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            reason=reason,
+            amount=amount,
+            description=description,
+            lead_id=lead_id,
+        )
+        self.session.add(p)
+        await self.session.flush()
+        return p
+
+    async def list_by_user(self, user_id: int):
+        q = select(Penalty).where(Penalty.user_id == user_id)
+        if self.tenant_id is not None:
+            q = q.where(Penalty.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_total(self, user_id: int, period: str = None):
+        from sqlalchemy import func as sqlfunc
+        q = select(sqlfunc.sum(Penalty.amount)).where(Penalty.user_id == user_id)
+        if self.tenant_id is not None:
+            q = q.where(Penalty.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar() or 0
+
+
+class WorkSessionRepository(BaseRepository):
+    model = WorkSession
+
+    async def get_today(self, user_id: int):
+        from datetime import date
+        today = date.today().isoformat()
+        q = select(WorkSession).where(
+            WorkSession.user_id == user_id,
+            WorkSession.date == today,
+        )
+        if self.tenant_id is not None:
+            q = q.where(WorkSession.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def record_login(self, user_id: int):
+        from datetime import date
+        today = date.today().isoformat()
+        ws = await self.get_today(user_id)
+        if not ws:
+            ws = WorkSession(
+                tenant_id=self.tenant_id,
+                user_id=user_id,
+                date=today,
+                login_at=datetime.utcnow(),
+            )
+            self.session.add(ws)
+        else:
+            ws.login_at = ws.login_at or datetime.utcnow()
+        await self.session.flush()
+        return ws
+
+    async def record_logout(self, user_id: int):
+        ws = await self.get_today(user_id)
+        if ws and not ws.logout_at:
+            ws.logout_at = datetime.utcnow()
+            if ws.login_at:
+                ws.total_seconds = int((ws.logout_at - ws.login_at).total_seconds())
+        return ws
+
+    async def increment_actions(self, user_id: int):
+        ws = await self.get_today(user_id)
+        if ws:
+            ws.actions_count = (ws.actions_count or 0) + 1
+        return ws
+
+    async def list_by_user(self, user_id: int, start_date: str = None, end_date: str = None):
+        q = select(WorkSession).where(WorkSession.user_id == user_id)
+        if self.tenant_id is not None:
+            q = q.where(WorkSession.tenant_id == self.tenant_id)
+        if start_date:
+            q = q.where(WorkSession.date >= start_date)
+        if end_date:
+            q = q.where(WorkSession.date <= end_date)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def list_all(self, date: str = None):
+        q = select(WorkSession)
+        if self.tenant_id is not None:
+            q = q.where(WorkSession.tenant_id == self.tenant_id)
+        if date:
+            q = q.where(WorkSession.date == date)
+        return (await self.session.execute(q)).scalars().all()
+
+
+class ResponseTimeRepository(BaseRepository):
+    model = ResponseTimeLog
+
+    async def record_assignment(self, user_id: int, lead_id: int):
+        rtl = ResponseTimeLog(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            lead_id=lead_id,
+            assigned_at=datetime.utcnow(),
+        )
+        self.session.add(rtl)
+        await self.session.flush()
+        return rtl
+
+    async def record_response(self, lead_id: int):
+        q = select(ResponseTimeLog).where(ResponseTimeLog.lead_id == lead_id)
+        if self.tenant_id is not None:
+            q = q.where(ResponseTimeLog.tenant_id == self.tenant_id)
+        rtl = (await self.session.execute(q)).scalar_one_or_none()
+        if rtl and not rtl.first_response_at:
+            rtl.first_response_at = datetime.utcnow()
+            rtl.response_seconds = int((rtl.first_response_at - rtl.assigned_at).total_seconds())
+        return rtl
+
+    async def get_avg_response_time(self, user_id: int, days: int = 30):
+        from sqlalchemy import func as sqlfunc
+        from datetime import timedelta
+        since = datetime.utcnow() - timedelta(days=days)
+        q = select(sqlfunc.avg(ResponseTimeLog.response_seconds)).where(
+            ResponseTimeLog.user_id == user_id,
+            ResponseTimeLog.response_seconds.isnot(None),
+            ResponseTimeLog.created_at >= since,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ResponseTimeLog.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar() or 0
+
+    async def list_by_user(self, user_id: int, days: int = 30):
+        from datetime import timedelta
+        since = datetime.utcnow() - timedelta(days=days)
+        q = select(ResponseTimeLog).where(
+            ResponseTimeLog.user_id == user_id,
+            ResponseTimeLog.created_at >= since,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ResponseTimeLog.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()
+
+
+class LeadSourceRepository(BaseRepository):
+    model = LeadSource
+
+    async def list_active(self):
+        q = select(LeadSource).where(LeadSource.is_active == True)
+        if self.tenant_id is not None:
+            q = q.where(LeadSource.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_by_id(self, source_id: int):
+        q = select(LeadSource).where(LeadSource.id == source_id)
+        if self.tenant_id is not None:
+            q = q.where(LeadSource.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def list_all(self):
+        q = select(LeadSource)
+        if self.tenant_id is not None:
+            q = q.where(LeadSource.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()

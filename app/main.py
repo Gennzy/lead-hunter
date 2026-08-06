@@ -166,7 +166,124 @@ async def run_anomaly_checker():
             return
         except Exception as e:
             logger.error("Anomaly checker error: %s", e)
-            await asyncio.sleep(300)
+        await asyncio.sleep(300)
+
+
+async def run_scraper_monitor():
+    """Periodically run multi-channel scrapers to find renovation leads."""
+    from app.scrapers import VKScraper, AvitoScraper, CIANScraper, ForumHouseScraper
+    from app.models import LeadSource, Lead, User, Tenant
+    from app.repositories import LeadRepository
+    from app.analyzer import analyze_message
+    from app.config_manager import TenantConfig
+    from datetime import datetime
+
+    while True:
+        try:
+            await asyncio.sleep(1800)  # Run every 30 minutes
+
+            async with async_session() as session:
+                result = await session.execute(
+                    select(LeadSource).where(LeadSource.is_active == True)
+                )
+                sources = result.scalars().all()
+
+            for source in sources:
+                try:
+                    config = source.config or {}
+                    tenant_id = source.tenant_id
+
+                    # Load tenant config for scoring
+                    tenant_config = TenantConfig(config)
+
+                    # Get or create scraper
+                    scraper_map = {
+                        "vk": VKScraper,
+                        "avito": AvitoScraper,
+                        "cian": CIANScraper,
+                        "forumhouse": ForumHouseScraper,
+                    }
+
+                    ScraperClass = scraper_map.get(source.name)
+                    if not ScraperClass:
+                        continue
+
+                    scraper = ScraperClass(config)
+
+                    # Run monitor
+                    leads = await scraper.monitor(
+                        queries=config.get("queries", []),
+                        cities=config.get("cities", []),
+                    )
+
+                    # Process found leads
+                    new_leads_count = 0
+                    async with async_session() as session:
+                        leads_repo = LeadRepository(session, tenant_id)
+
+                        for scraped_lead in leads:
+                            # Check for duplicates by source_id
+                            existing = await session.execute(
+                                select(Lead).where(
+                                    Lead.tenant_id == tenant_id,
+                                    Lead.message_text.ilike(f"%{scraped_lead.source_id[:50]}%"),
+                                )
+                            )
+                            if existing.scalar_one_or_none():
+                                continue
+
+                            # Analyze the lead
+                            analysis = await analyze_message(
+                                scraped_lead.text,
+                                f"{source.name}:{scraped_lead.source}",
+                                tenant_config=tenant_config,
+                                tenant_id=tenant_id,
+                            )
+
+                            if not analysis.get("is_lead"):
+                                continue
+                            if analysis["lead_score"] < tenant_config.min_lead_score:
+                                continue
+
+                            # Create lead
+                            await leads_repo.create(
+                                message_text=scraped_lead.text[:5000],
+                                chat_title=f"[{source.display_name or source.name}] {scraped_lead.city or 'N/A'}",
+                                chat_username=scraped_lead.source_url,
+                                lead_score=analysis["lead_score"],
+                                urgency=scraped_lead.urgency or analysis.get("urgency", "low"),
+                                reason=analysis.get("reason", ""),
+                                recommended_message=analysis.get("recommended_message", ""),
+                                user_id=scraped_lead.author_id or None,
+                                username=scraped_lead.author_username or None,
+                                first_name=scraped_lead.author_name or None,
+                            )
+                            new_leads_count += 1
+
+                        await session.commit()
+
+                    # Update source stats
+                    async with async_session() as session:
+                        result = await session.execute(
+                            select(LeadSource).where(LeadSource.id == source.id)
+                        )
+                        src = result.scalar_one_or_none()
+                        if src:
+                            src.leads_found = (src.leads_found or 0) + new_leads_count
+                            src.last_synced = datetime.utcnow()
+                            await session.commit()
+
+                    if new_leads_count > 0:
+                        logger.info("Scraper %s: found %d new leads", source.name, new_leads_count)
+
+                except Exception as e:
+                    logger.error("Scraper %s failed: %s", source.name, e)
+
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("Scraper monitor error: %s", e)
+        await asyncio.sleep(300)
 
 
 async def run_reminder_checker():
@@ -246,7 +363,8 @@ async def main():
         tasks.append(run_bot())
         tasks.append(run_anomaly_checker())
         tasks.append(run_reminder_checker())
-        logger.info("Bot + anomaly checker + reminders: started")
+        tasks.append(run_scraper_monitor())
+        logger.info("Bot + anomaly checker + reminders + scrapers: started")
     else:
         logger.warning("Bot: no BOT_TOKEN, skipped")
 

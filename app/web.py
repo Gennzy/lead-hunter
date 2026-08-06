@@ -19,6 +19,8 @@ from app.repositories import (
     TenantRepository, UserRepository, LeadRepository,
     LeadHistoryRepository, BlacklistedUserRepository, TelegramSessionRepository,
     TenantUsageRepository, ActionLogRepository, MessageTemplateRepository, WebhookRepository,
+    EmployeeTargetRepository, CommissionRepository, PenaltyRepository, WorkSessionRepository,
+    ResponseTimeRepository, LeadSourceRepository,
 )
 from app.config_manager import TenantConfig
 from app.auth import (
@@ -1360,6 +1362,257 @@ async def team_page(request: Request):
     return templates.TemplateResponse(request, "team.html", ctx)
 
 
+@app.get("/team/kpi", response_class=HTMLResponse)
+async def team_kpi_page(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    today = datetime.utcnow()
+    current_period = today.strftime("%Y-%m")
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+
+        targets_repo = EmployeeTargetRepository(session, tenant_id)
+        leads_repo = LeadRepository(session, tenant_id)
+
+        kpi_data = []
+        for u in active_users:
+            # Get actual stats for this period
+            period_start = datetime.strptime(f"{current_period}-01", "%Y-%m-%d")
+            if today.month == 12:
+                period_end = datetime.strptime(f"{today.year + 1}-01-01", "%Y-%m-%d")
+            else:
+                period_end = datetime.strptime(f"{today.year}-{today.month + 1:02d}-01", "%Y-%m-%d")
+
+            actual_leads = await leads_repo.count(
+                Lead.assigned_to == u.id,
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+            )
+            actual_deals = await leads_repo.count(
+                Lead.assigned_to == u.id,
+                Lead.status == "deal",
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+            )
+            revenue_result = await session.execute(
+                select(func.sum(Lead.deal_amount)).where(
+                    Lead.assigned_to == u.id,
+                    Lead.deal_amount.isnot(None),
+                    Lead.created_at >= period_start,
+                    Lead.created_at < period_end,
+                )
+            )
+            actual_revenue = revenue_result.scalar() or 0
+
+            target = await targets_repo.get_or_create(u.id, current_period)
+            await targets_repo.update_actuals(u.id, current_period, actual_leads, actual_deals, actual_revenue)
+
+            kpi_data.append({
+                "user": u,
+                "target": target,
+                "leads_pct": round(actual_leads / target.target_leads * 100) if target.target_leads > 0 else 0,
+                "deals_pct": round(actual_deals / target.target_deals * 100) if target.target_deals > 0 else 0,
+                "revenue_pct": round(actual_revenue / target.target_revenue * 100) if target.target_revenue > 0 else 0,
+            })
+
+        await session.commit()
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, kpi_data=kpi_data, current_period=current_period, csrf_token=csrf)
+    return templates.TemplateResponse(request, "team_kpi.html", ctx)
+
+
+@app.post("/team/kpi/set-target")
+async def team_kpi_set_target(
+    request: Request,
+    user_id: int = Form(...),
+    period: str = Form(...),
+    target_leads: int = Form(0),
+    target_deals: int = Form(0),
+    target_revenue: float = Form(0),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = EmployeeTargetRepository(session, tenant_id)
+        target = await repo.get_or_create(user_id, period)
+        target.target_leads = target_leads
+        target.target_deals = target_deals
+        target.target_revenue = target_revenue
+        await session.commit()
+
+    return RedirectResponse("/team/kpi?success=Цель+установлена", status_code=303)
+
+
+@app.get("/team/commissions", response_class=HTMLResponse)
+async def team_commissions_page(request: Request, period: str = Query(None)):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    if not period:
+        period = datetime.utcnow().strftime("%Y-%m")
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+        user_map = {u.id: u for u in active_users}
+
+        comm_repo = CommissionRepository(session, tenant_id)
+        summary = await comm_repo.get_summary(period)
+        all_comms = await comm_repo.list_all(period)
+
+        penalty_repo = PenaltyRepository(session, tenant_id)
+
+        comm_data = []
+        for row in summary:
+            uid, total_comm, total_bonus, total_deals, deals_count = row
+            penalties_total = await penalty_repo.get_total(uid)
+            net = (total_comm or 0) + (total_bonus or 0) - penalties_total
+            comm_data.append({
+                "user": user_map.get(uid),
+                "total_commission": total_comm or 0,
+                "total_bonus": total_bonus or 0,
+                "penalties_total": penalties_total,
+                "net": net,
+                "deals_count": deals_count or 0,
+                "total_deals": total_deals or 0,
+            })
+
+        total_commission = sum(d["total_commission"] for d in comm_data)
+        total_bonus = sum(d["total_bonus"] for d in comm_data)
+        total_penalties = sum(d["penalties_total"] for d in comm_data)
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(
+        user, comm_data=comm_data, all_comms=all_comms, user_map=user_map,
+        current_period=period, total_commission=total_commission, total_bonus=total_bonus,
+        total_penalties=total_penalties, csrf_token=csrf,
+    )
+    return templates.TemplateResponse(request, "team_commissions.html", ctx)
+
+
+@app.post("/team/commissions/add-penalty")
+async def team_commissions_add_penalty(
+    request: Request,
+    user_id: int = Form(...),
+    reason: str = Form(...),
+    amount: float = Form(...),
+    description: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = PenaltyRepository(session, tenant_id)
+        await repo.create(user_id, reason, amount, description)
+        await session.commit()
+
+    return RedirectResponse("/team/commissions?success=Штраф+начислен", status_code=303)
+
+
+@app.get("/team/analytics", response_class=HTMLResponse)
+async def team_analytics_page(request: Request, days: int = Query(30)):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+
+        response_repo = ResponseTimeRepository(session, tenant_id)
+        leads_repo = LeadRepository(session, tenant_id)
+
+        analytics_data = []
+        for u in active_users:
+            avg_response = await response_repo.get_avg_response_time(u.id, days)
+            total_leads = await leads_repo.count(Lead.assigned_to == u.id, Lead.status != "deleted")
+            deals = await leads_repo.count(Lead.assigned_to == u.id, Lead.status == "deal")
+            conversion = round(deals / total_leads * 100) if total_leads > 0 else 0
+
+            # Source breakdown
+            source_rows = (await session.execute(
+                select(Lead.chat_title, func.count(Lead.id)).where(
+                    Lead.assigned_to == u.id, Lead.status != "deleted"
+                ).group_by(Lead.chat_title).order_by(func.count(Lead.id).desc()).limit(5)
+            )).fetchall()
+
+            analytics_data.append({
+                "user": u,
+                "avg_response_seconds": avg_response,
+                "avg_response_label": _format_duration(avg_response),
+                "total_leads": total_leads,
+                "deals": deals,
+                "conversion": conversion,
+                "top_sources": [{"name": s[:30], "count": c} for s, c in source_rows],
+            })
+
+    ctx = await _template_ctx(user, analytics_data=analytics_data, days=days)
+    return templates.TemplateResponse(request, "team_analytics.html", ctx)
+
+
+@app.get("/team/timesheet", response_class=HTMLResponse)
+async def team_timesheet_page(request: Request, date: str = Query(None)):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    if not date:
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+
+        ws_repo = WorkSessionRepository(session, tenant_id)
+        sessions = await ws_repo.list_all(date)
+
+        ws_data = []
+        for s in sessions:
+            u = next((u for u in active_users if u.id == s.user_id), None)
+            hours = round(s.total_seconds / 3600, 1) if s.total_seconds else 0
+            ws_data.append({
+                "session": s,
+                "user": u,
+                "hours": hours,
+            })
+
+    ctx = await _template_ctx(user, ws_data=ws_data, current_date=date)
+    return templates.TemplateResponse(request, "team_timesheet.html", ctx)
+
+
+def _format_duration(seconds: float) -> str:
+    if not seconds:
+        return "—"
+    s = int(seconds)
+    if s < 60:
+        return f"{s}с"
+    if s < 3600:
+        return f"{s // 60}м {s % 60}с"
+    return f"{s // 3600}ч {(s % 3600) // 60}м"
+
+
 @app.get("/activity", response_class=HTMLResponse)
 async def activity_page(
     request: Request,
@@ -2531,3 +2784,128 @@ async def log_profile_click(request: Request, lead_id: int):
         )
         await session.commit()
     raise HTTPException(status_code=200)
+
+
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_list(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        from app.models import LeadSource
+        result = await session.execute(
+            select(LeadSource).where(LeadSource.tenant_id == tenant_id).order_by(LeadSource.created_at.desc())
+        )
+        sources = result.scalars().all()
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, sources=sources, csrf_token=csrf)
+    return templates.TemplateResponse(request, "sources.html", ctx)
+
+
+@app.post("/sources/add")
+async def source_add(
+    request: Request,
+    name: str = Form(...),
+    display_name: str = Form(""),
+    vk_token: str = Form(""),
+    vk_groups: str = Form(""),
+    avito_city: str = Form(""),
+    cian_api_key: str = Form(""),
+    cian_city: str = Form(""),
+    forumhouse_sections: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    config = {}
+
+    if name == "vk":
+        config = {
+            "vk_access_token": vk_token,
+            "groups": [g.strip() for g in vk_groups.split(",") if g.strip()],
+            "queries": [
+                "ищу бригаду для ремонта", "нужна бригада ремонт",
+                "ремонт квартиры ищу", "капитальный ремонт",
+            ],
+        }
+    elif name == "avito":
+        config = {
+            "city": avito_city or "moskva",
+            "queries": [
+                "ищу бригаду для ремонта", "нужна бригада ремонт",
+                "ремонт квартиры",
+            ],
+        }
+    elif name == "cian":
+        config = {
+            "cian_api_key": cian_api_key,
+            "city": cian_city or "moscow",
+        }
+    elif name == "forumhouse":
+        sections = [s.strip() for s in forumhouse_sections.split(",") if s.strip()]
+        config = {
+            "sections": sections or ["remont-i-otdelka", "stroitelstvo"],
+        }
+
+    from app.models import LeadSource
+    async with async_session() as session:
+        source = LeadSource(
+            tenant_id=tenant_id,
+            name=name,
+            display_name=display_name or name.upper(),
+            config=config,
+        )
+        session.add(source)
+        await session.commit()
+
+    return RedirectResponse("/sources?success=Источник+добавлен", status_code=303)
+
+
+@app.post("/sources/{source_id}/delete")
+async def source_delete(request: Request, source_id: int, csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        from app.models import LeadSource
+        result = await session.execute(
+            select(LeadSource).where(LeadSource.id == source_id, LeadSource.tenant_id == tenant_id)
+        )
+        source = result.scalar_one_or_none()
+        if source:
+            source.is_active = False
+            await session.commit()
+    return RedirectResponse("/sources?success=Источник+удалён", status_code=303)
+
+
+@app.post("/sources/{source_id}/toggle")
+async def source_toggle(request: Request, source_id: int, csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        from app.models import LeadSource
+        result = await session.execute(
+            select(LeadSource).where(LeadSource.id == source_id, LeadSource.tenant_id == tenant_id)
+        )
+        source = result.scalar_one_or_none()
+        if source:
+            source.is_active = not source.is_active
+            await session.commit()
+    return RedirectResponse("/sources?success=Статус+обновлён", status_code=303)

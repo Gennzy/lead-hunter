@@ -414,6 +414,84 @@ async def cmd_my_stats(message):
     await message.answer(text, parse_mode="HTML")
 
 
+@dp.message(F.text.startswith("/kpi"))
+async def cmd_kpi(message):
+    from app.models import User, Lead
+    from app.repositories import EmployeeTargetRepository
+    from datetime import datetime
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.username == message.from_user.username)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer("❌ Вы не зарегистрированы в системе")
+            return
+
+        current_period = datetime.utcnow().strftime("%Y-%m")
+        targets_repo = EmployeeTargetRepository(session, user.tenant_id)
+        target = await targets_repo.get_or_create(user.id, current_period)
+
+        # Get actuals
+        from sqlalchemy import func
+        period_start = datetime.strptime(f"{current_period}-01", "%Y-%m-%d")
+        if datetime.utcnow().month == 12:
+            period_end = datetime.strptime(f"{datetime.utcnow().year + 1}-01-01", "%Y-%m-%d")
+        else:
+            period_end = datetime.strptime(f"{datetime.utcnow().year}-{datetime.utcnow().month + 1:02d}-01", "%Y-%m-%d")
+
+        actual_leads = (await session.execute(
+            select(func.count(Lead.id)).where(
+                Lead.assigned_to == user.id,
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+            )
+        )).scalar() or 0
+
+        actual_deals = (await session.execute(
+            select(func.count(Lead.id)).where(
+                Lead.assigned_to == user.id,
+                Lead.status == "deal",
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+            )
+        )).scalar() or 0
+
+        revenue = (await session.execute(
+            select(func.sum(Lead.deal_amount)).where(
+                Lead.assigned_to == user.id,
+                Lead.deal_amount.isnot(None),
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+            )
+        )).scalar() or 0
+
+        await targets_repo.update_actuals(user.id, current_period, actual_leads, actual_deals, revenue)
+        await session.commit()
+
+    def pct(actual, target):
+        return f"{min(100, round(actual / target * 100))}%" if target > 0 else "—"
+
+    def bar(actual, target, size=10):
+        if target <= 0:
+            return "░" * size
+        filled = min(size, round(actual / target * size))
+        return "█" * filled + "░" * (size - filled)
+
+    text = (
+        f"🎯 <b>KPI — {current_period}</b>\n\n"
+        f"📋 <b>Лиды:</b> {actual_leads}/{target.target_leads} {pct(actual_leads, target.target_leads)}\n"
+        f"   {bar(actual_leads, target.target_leads)}\n\n"
+        f"🤝 <b>Сделки:</b> {actual_deals}/{target.target_deals} {pct(actual_deals, target.target_deals)}\n"
+        f"   {bar(actual_deals, target.target_deals)}\n\n"
+        f"💰 <b>Выручка:</b> {int(revenue):,}/{int(target.target_revenue):,} ₽ {pct(revenue, target.target_revenue)}\n"
+        f"   {bar(revenue, target.target_revenue)}\n\n"
+        f"📊 Выполнение: <b>{pct((actual_leads + actual_deals + revenue/10000) / max(1, target.target_leads + target.target_deals + target.target_revenue/10000) * 100, 100)}</b>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 async def start_bot():
     await dp.start_polling(bot)
 
@@ -608,9 +686,23 @@ async def auto_assign_leads():
                 load_rows = (await session.execute(load_q)).fetchall()
                 load_map = {uid: cnt for uid, cnt in load_rows}
 
-                # Round-robin with least load
+                # Weighted assignment with max_leads limit
                 for lead in unassigned:
-                    best_manager = min(active_managers, key=lambda m: load_map.get(m.id, 0))
+                    # Filter managers by max_leads limit
+                    eligible = [
+                        m for m in active_managers
+                        if load_map.get(m.id, 0) < (m.max_leads or 50)
+                    ]
+                    if not eligible:
+                        eligible = active_managers  # fallback to all
+
+                    # Weighted selection: lower load / higher weight = better
+                    def weighted_score(m):
+                        current_load = load_map.get(m.id, 0)
+                        weight = m.weight or 1.0
+                        return current_load / weight
+
+                    best_manager = min(eligible, key=weighted_score)
                     lead.assigned_to = best_manager.id
                     load_map[best_manager.id] = load_map.get(best_manager.id, 0) + 1
 
