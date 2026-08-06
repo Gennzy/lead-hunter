@@ -381,6 +381,73 @@ class LeadRepository(BaseRepository):
             "medium_score": medium_score,
         }
 
+    async def get_revenue_stats(self, days: int = 30) -> dict:
+        since = datetime.utcnow() - timedelta(days=days)
+        filters = [Lead.status != "deleted", Lead.deal_amount.isnot(None), Lead.deal_amount > 0]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+
+        total_q = select(
+            sa_func.count(Lead.id),
+            sa_func.sum(Lead.deal_amount),
+            sa_func.avg(Lead.deal_amount),
+        ).where(*filters)
+
+        period_filters = filters + [Lead.created_at >= since]
+        period_q = select(
+            sa_func.count(Lead.id),
+            sa_func.sum(Lead.deal_amount),
+            sa_func.avg(Lead.deal_amount),
+        ).where(*period_filters)
+
+        by_chat_q = (
+            select(Lead.chat_title, sa_func.count(Lead.id), sa_func.sum(Lead.deal_amount))
+            .where(*filters)
+            .group_by(Lead.chat_title)
+            .order_by(sa_func.sum(Lead.deal_amount).desc())
+        )
+
+        by_manager_q = (
+            select(Lead.assigned_to, sa_func.count(Lead.id), sa_func.sum(Lead.deal_amount))
+            .where(*filters)
+            .group_by(Lead.assigned_to)
+            .order_by(sa_func.sum(Lead.deal_amount).desc())
+        )
+
+        total = (await self.session.execute(total_q)).fetchone()
+        period = (await self.session.execute(period_q)).fetchone()
+        by_chat = (await self.session.execute(by_chat_q)).fetchall()
+        by_manager = (await self.session.execute(by_manager_q)).fetchall()
+
+        all_leads_q = select(sa_func.count(Lead.id))
+        if self.tenant_id is not None:
+            all_leads_q = all_leads_q.where(Lead.tenant_id == self.tenant_id, Lead.status != "deleted")
+        total_all = (await self.session.execute(all_leads_q)).scalar() or 0
+
+        return {
+            "total_deals": total[0] or 0,
+            "total_revenue": round(total[1] or 0, 2),
+            "avg_deal": round(total[2] or 0, 2),
+            "period_deals": period[0] or 0,
+            "period_revenue": round(period[1] or 0, 2),
+            "period_avg": round(period[2] or 0, 2),
+            "conversion_rate": round((total[0] or 0) / total_all * 100, 1) if total_all > 0 else 0,
+            "by_chat": [{"chat": r[0], "deals": r[1], "revenue": round(r[2] or 0, 2)} for r in by_chat],
+            "by_manager": [{"user_id": r[0], "deals": r[1], "revenue": round(r[2] or 0, 2)} for r in by_manager],
+        }
+
+    async def set_deal_amount(self, lead_id: int, amount: float, currency: str = "RUB") -> Optional[Lead]:
+        lead = await self.get_by_id(lead_id)
+        if lead:
+            lead.deal_amount = amount
+            lead.deal_currency = currency
+            lead.deal_closed_at = datetime.utcnow()
+            if lead.status != "deal":
+                lead.status = "deal"
+            await self.session.flush()
+            return lead
+        return None
+
     async def create(self, **kwargs) -> Lead:
         if self.tenant_id is not None:
             kwargs["tenant_id"] = self.tenant_id

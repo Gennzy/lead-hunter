@@ -244,6 +244,176 @@ async def cb_deal(callback: CallbackQuery):
     await callback.message.edit_text(callback.message.text + "\n\n🤝 <b>Сделка!</b>", parse_mode="HTML")
 
 
+@dp.message(F.text.startswith("/myleads"))
+async def cmd_my_leads(message):
+    from app.models import User
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.username == message.from_user.username)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer("❌ Вы не зарегистрированы в системе")
+            return
+
+        leads_result = await session.execute(
+            select(Lead).where(
+                Lead.assigned_to == user.id,
+                Lead.status.notin_(["deleted", "archive"]),
+            ).order_by(Lead.created_at.desc()).limit(10)
+        )
+        leads = leads_result.scalars().all()
+
+    if not leads:
+        await message.answer("📋 У вас нет активных лидов")
+        return
+
+    lines = ["📋 <b>Мои лиды (топ-10):</b>\n"]
+    for lead in leads:
+        icon = {"high": "🔥", "medium": "⚡", "low": "💤"}.get(lead.urgency, "")
+        status_label = lead.status_label()
+        name = lead.first_name or lead.username or f"#{lead.id}"
+        lines.append(f"#{lead.id} {icon} <b>{name}</b> — {status_label} (score: {int(lead.lead_score)})")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/status"))
+async def cmd_status(message):
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Использование: /status &lt;id&gt; &lt;статус&gt;\nСтатусы: new, contacted, interested, deal, not_interested")
+        return
+
+    try:
+        lead_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Неверный ID лида")
+        return
+
+    new_status = parts[2].lower()
+    valid_statuses = ["new", "contacted", "interested", "deal", "not_interested", "in_progress", "missed_call", "archive"]
+    if new_status not in valid_statuses:
+        await message.answer(f"❌ Неверный статус. Допустимые: {', '.join(valid_statuses)}")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Lead).where(Lead.id == lead_id))
+        lead = result.scalar_one_or_none()
+        if not lead:
+            await message.answer("❌ Лид не найден")
+            return
+
+        from app.models import User
+        user_result = await session.execute(
+            select(User).where(User.username == message.from_user.username)
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or (lead.assigned_to != user.id and user.role not in ("super_admin", "admin")):
+            await message.answer("❌ Нет доступа к этому лиду")
+            return
+
+        old_status = lead.status
+        lead.status = new_status
+        await ActionLogRepository(session, lead.tenant_id).log(
+            user.id, "status_change", lead_id=lead_id,
+            meta={"from": old_status, "to": new_status, "via": "telegram_bot"},
+        )
+        await session.commit()
+
+    await message.answer(f"✅ Лид #{lead_id}: {old_status} → {new_status}")
+
+
+@dp.message(F.text.startswith("/lead"))
+async def cmd_lead(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование: /lead &lt;id&gt;")
+        return
+
+    try:
+        lead_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Неверный ID лида")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Lead).where(Lead.id == lead_id))
+        lead = result.scalar_one_or_none()
+        if not lead:
+            await message.answer("❌ Лид не найден")
+            return
+
+        from app.models import User
+        user_result = await session.execute(
+            select(User).where(User.username == message.from_user.username)
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or (lead.assigned_to != user.id and user.role not in ("super_admin", "admin")):
+            await message.answer("❌ Нет доступа к этому лиду")
+            return
+
+    icon = {"high": "🔥", "medium": "⚡", "low": "💤"}.get(lead.urgency, "")
+    text = (
+        f"👤 <b>Лид #{lead.id}</b>\n\n"
+        f"📝 {html.escape((lead.message_text or '')[:300])}\n\n"
+        f"📊 Score: <b>{int(lead.lead_score)}</b> {icon}\n"
+        f"📋 Статус: <b>{lead.status_label()}</b>\n"
+        f"🏠 Чат: {html.escape(lead.chat_title or '')}\n"
+        f"📅 Дата: {lead.created_at.strftime('%d.%m %H:%M') if lead.created_at else '?'}\n"
+    )
+    if lead.username:
+        text += f"👤 @{html.escape(lead.username)}\n"
+    await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/mystats"))
+async def cmd_my_stats(message):
+    from app.models import User
+    from datetime import datetime, timedelta
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.username == message.from_user.username)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer("❌ Вы не зарегистрированы в системе")
+            return
+
+        since = datetime.utcnow() - timedelta(days=7)
+
+        total_q = select(Lead).where(
+            Lead.assigned_to == user.id,
+            Lead.status.notin_(["deleted", "archive"]),
+        )
+        total = len((await session.execute(total_q)).scalars().all())
+
+        new_q = select(Lead).where(
+            Lead.assigned_to == user.id, Lead.status == "new"
+        )
+        new_count = len((await session.execute(new_q)).scalars().all())
+
+        deal_q = select(Lead).where(
+            Lead.assigned_to == user.id, Lead.status == "deal"
+        )
+        deal_count = len((await session.execute(deal_q)).scalars().all())
+
+        week_q = select(Lead).where(
+            Lead.assigned_to == user.id,
+            Lead.created_at >= since,
+        )
+        week_count = len((await session.execute(week_q)).scalars().all())
+
+    text = (
+        f"📊 <b>Ваша статистика (7 дней):</b>\n\n"
+        f"📋 Активных лидов: <b>{total}</b>\n"
+        f"🆕 Новых: <b>{new_count}</b>\n"
+        f"🤝 Сделок: <b>{deal_count}</b>\n"
+        f"📅 Получено за неделю: <b>{week_count}</b>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 async def start_bot():
     await dp.start_polling(bot)
 

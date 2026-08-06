@@ -76,6 +76,11 @@ class Lead(Base):
     __tablename__ = "leads"
     __table_args__ = (
         Index("ix_leads_tenant_id", "tenant_id"),
+        Index("ix_leads_tenant_status", "tenant_id", "status"),
+        Index("ix_leads_tenant_created", "tenant_id", "created_at"),
+        Index("ix_leads_tenant_score", "tenant_id", "lead_score"),
+        Index("ix_leads_status", "status"),
+        Index("ix_leads_chat_title", "chat_title"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -97,6 +102,9 @@ class Lead(Base):
     recommended_message = Column(Text, nullable=True)
     status = Column(String(30), default="new")
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    deal_amount = Column(Float, nullable=True)
+    deal_currency = Column(String(10), default="RUB")
+    deal_closed_at = Column(DateTime, nullable=True)
     is_notified = Column(Integer, default=0)
     feedback = Column(String(10), nullable=True)  # "useful" or "not_useful"
     feedback_reason = Column(String(50), nullable=True)  # spam, off_topic, duplicate, found_crew
@@ -142,6 +150,8 @@ class LeadHistory(Base):
     __tablename__ = "lead_history"
     __table_args__ = (
         Index("ix_lead_history_tenant_id", "tenant_id"),
+        Index("ix_lead_history_lead_id", "lead_id"),
+        Index("ix_lead_history_tenant_lead", "tenant_id", "lead_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -174,6 +184,7 @@ class ProcessedMessage(Base):
     __tablename__ = "processed_messages"
     __table_args__ = (
         Index("ix_processed_messages_tenant_id", "tenant_id"),
+        Index("ix_processed_messages_chat_message", "chat_title", "message_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -220,6 +231,8 @@ class ActionLog(Base):
     __table_args__ = (
         Index("ix_action_logs_tenant_created", "tenant_id", "created_at"),
         Index("ix_action_logs_tenant_user_created", "tenant_id", "user_id", "created_at"),
+        Index("ix_action_logs_tenant_action", "tenant_id", "action_type"),
+        Index("ix_action_logs_user_action", "user_id", "action_type"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

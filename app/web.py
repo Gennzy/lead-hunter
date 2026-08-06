@@ -661,8 +661,11 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
 
         prev_id, next_id = await leads.get_prev_next(lead_id)
 
+    from app.ml_scorer import score_lead
+    ml_prediction = await score_lead(lead, tenant_id)
+
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error)
+    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error, ml_prediction=ml_prediction)
     return templates.TemplateResponse(request, "lead_detail.html", ctx)
 
 
