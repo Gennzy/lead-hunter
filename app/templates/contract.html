@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Договор об обработке лидов — {{ contract.contract_number }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm;
+        }
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            font-size: 12pt;
+            line-height: 1.5;
+            color: #000;
+            max-width: 210mm;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-size: 16pt;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .contract-info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            font-size: 11pt;
+        }
+        .party {
+            margin: 15px 0;
+        }
+        .party-label {
+            font-weight: bold;
+        }
+        .article {
+            margin: 20px 0;
+        }
+        .article-title {
+            font-weight: bold;
+            font-size: 12pt;
+            margin-bottom: 10px;
+        }
+        .article p {
+            margin: 8px 0;
+            text-indent: 20px;
+        }
+        .article ul {
+            margin: 8px 0 8px 20px;
+            padding-left: 20px;
+        }
+        .article li {
+            margin: 5px 0;
+        }
+        .penalty-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        .penalty-table td, .penalty-table th {
+            border: 1px solid #000;
+            padding: 8px 10px;
+            text-align: left;
+        }
+        .penalty-table th {
+            background: #f5f5f5;
+            font-weight: bold;
+        }
+        .signatures {
+            margin-top: 50px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .signature-block {
+            width: 45%;
+        }
+        .signature-line {
+            border-bottom: 1px solid #000;
+            height: 30px;
+            margin: 10px 0 5px 0;
+        }
+        .signature-label {
+            font-size: 10pt;
+            color: #333;
+        }
+        @media print {
+            body {
+                padding: 0;
+            }
+            .no-print {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="no-print" style="text-align:center;margin-bottom:20px;padding:10px;background:#f0f0f0;border-radius:5px">
+        <button onclick="window.print()" style="padding:10px 20px;font-size:14px;cursor:pointer">🖨️ Распечатать / Скачать PDF</button>
+    </div>
+
+    <div class="header">
+        <h1>ДОГОВОР ОБ ОБРАБОТКЕ ЛИДОВ</h1>
+        <p>№ {{ contract.contract_number }}</p>
+    </div>
+
+    <div class="contract-info">
+        <div>г. {{ tenant.city or '___________' }}</div>
+        <div>{{ contract.created_at.strftime('%d.%m.%Y') if contract.created_at else '«___» ________ 20__ г.' }}</div>
+    </div>
+
+    <div class="party">
+        <span class="party-label">{{ tenant.name }}</span>, именуемое далее «Заказчик», 
+        в лице директора {{ tenant_director_name or '___________' }}, с одной стороны,
+    </div>
+
+    <div class="party">
+        и <span class="party-label">{{ user.full_name or user.username }}</span>, 
+        именуемый далее «Исполнитель», с другой стороны,
+    </div>
+
+    <div class="party">
+        заключили настоящий Договор о нижеследующем:
+    </div>
+
+    <div class="article">
+        <div class="article-title">1. ПРЕДМЕТ ДОГОВОРА</div>
+        <p>1.1. Заказчик поручает, а Исполнитель принимает на себя обработку лидов (потенциальных клиентов), 
+        полученных из мониторинга Telegram-групп, в соответствии с условиями настоящего Договора.</p>
+        <p>1.2. Исполнитель обязуется обрабатывать лиды добросовестно, своевременно и в полном объёме.</p>
+    </div>
+
+    <div class="article">
+        <div class="article-title">2. ОБЯЗАННОСТИ ИСПОЛНИТЕЛЯ</div>
+        <ul>
+            <li>Своевременно обрабатывать assignedные лиды в сроки, установленные SLA;</li>
+            <li>Вести лог действий в системе (первый контакт, ответ клиента, назначение встречи);</li>
+            <li>Не передавать контактные данные третьим лицам;</li>
+            <li>Не уводить клиентов на прямые контакты в обход системы;</li>
+            <li>Информировать Заказчика о ходе обработки каждого лида;</li>
+            <li>Не отклонять лиды без веских оснований.</li>
+        </ul>
+    </div>
+
+    <div class="article">
+        <div class="article-title">3. ОБЯЗАННОСТИ ЗАКАЗЧИКА</div>
+        <ul>
+            <li>Обеспечить Исполнителя доступом к системе обработки лидов;</li>
+            <li>Предоставлять необходимую информацию для обработки лидов;</li>
+            <li>Своевременно выплачивать вознаграждение в соответствии с условиями Договора;</li>
+            <li>Осуществлять контроль за исполнением обязательств Исполнителем.</li>
+        </ul>
+    </div>
+
+    <div class="article">
+        <div class="article-title">4. ШТРАФЫ ЗА НАРУШЕНИЯ</div>
+        <p>4.1. За следующие нарушения Исполнителю начисляются штрафы:</p>
+        
+        <table class="penalty-table">
+            <thead>
+                <tr>
+                    <th>Нарушение</th>
+                    <th>Сумма штрафа</th>
+                    <th>Описание</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Кража лида</td>
+                    <td>{{ "{:,.0f}".format(contract.penalty_per_stolen_lead) }} руб.</td>
+                    <td>Передача контакта клиента третьим лицам, увод клиента в обход системы</td>
+                </tr>
+                <tr>
+                    <td>Фейковый отказ</td>
+                    <td>{{ "{:,.0f}".format(contract.penalty_per_fake_reject) }} руб.</td>
+                    <td>Отклонение лида с последующим его возвращением в систему</td>
+                </tr>
+                <tr>
+                    <td>Нарушение SLA</td>
+                    <td>{{ "{:,.0f}".format(contract.penalty_per_sla_breach) }} руб.</td>
+                    <td>Отсутствие действий по лиду более {{ contract.sla_hours }} часов</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p>4.2. Штрафы вычитаются из вознаграждения Исполнителя.</p>
+        <p>4.3. Заказчик оставляет за собой право расторгнуть Договор в случае неоднократных нарушений.</p>
+    </div>
+
+    <div class="article">
+        <div class="article-title">5. ВОЗНАГРАЖДЕНИЕ</div>
+        <p>5.1. Исполнитель получает комиссию в размере {{ contract.commission_rate }}% от суммы закрытых сделок.</p>
+        <p>5.2. Минимальная сумма сделки для начисления комиссии: {{ "{:,.0f}".format(contract.min_deal_amount) }} руб.</p>
+        <p>5.3. Комиссия выплачивается после получения оплаты от клиента и подтверждения Заказчиком.</p>
+        <p>5.4. Вознаграждение выплачивается ежемесячно не позднее 10-го числа месяца, следующего за отчётным.</p>
+    </div>
+
+    <div class="article">
+        <div class="article-title">6. СРОК ДЕЙСТВИЯ</div>
+        <p>6.1. Настоящий Договор вступает в силу с момента подписания и действует до «{{ contract.expires_at.strftime('%d.%m.%Y') if contract.expires_at else '___________' }}».</p>
+        <p>6.2. Договор может быть продлён по взаимному согласию сторон.</p>
+        <p>6.3. Любая из сторон может расторгнуть Договор, уведомив другую сторону за 30 календарных дней.</p>
+    </div>
+
+    <div class="article">
+        <div class="article-title">7. КОНФИДЕНЦИАЛЬНОСТЬ</div>
+        <p>7.1. Исполнитель обязуется не раскрывать третьим лицам информацию о клиентах, полученных в ходе обработки лидов.</p>
+        <p>7.2. Настоящее обязательство действует в течение всего срока действия Договора и в течение 12 месяцев после его прекращения.</p>
+    </div>
+
+    <div class="article">
+        <div class="article-title">8. ЗАКЛЮЧИТЕЛЬНЫЕ ПОЛОЖЕНИЯ</div>
+        <p>8.1. Все споры, возникающие между сторонами, разрешаются путём переговоров.</p>
+        <p>8.2. В случае не достижения согласия споры подлежат рассмотрению в суде по месту нахождения Заказчика.</p>
+        <p>8.3. Настоящий Договор составлен в двух экземплярах, имеющих одинаковую юридическую силу, по одному для каждой из сторон.</p>
+    </div>
+
+    <div class="signatures">
+        <div class="signature-block">
+            <div class="party">
+                <span class="party-label">ЗАКАЗЧИК:</span>
+            </div>
+            <div class="party">{{ tenant.name }}</div>
+            <div class="signature-line"></div>
+            <div class="signature-label">Подпись / {{ tenant_director_name or '_______________' }}</div>
+        </div>
+
+        <div class="signature-block">
+            <div class="party">
+                <span class="party-label">ИСПОЛНИТЕЛЬ:</span>
+            </div>
+            <div class="party">{{ user.full_name or user.username }}</div>
+            <div class="signature-line"></div>
+            <div class="signature-label">Подпись / {{ user.full_name or user.username }}</div>
+        </div>
+    </div>
+
+    <div style="margin-top:40px;font-size:10pt;color:#666;text-align:center">
+        <p>Договор № {{ contract.contract_number }} | {{ tenant.name }}</p>
+    </div>
+</body>
+</html>

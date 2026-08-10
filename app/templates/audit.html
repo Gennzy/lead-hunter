@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Аудит менеджеров — Lead Hunter{% endblock %}
+{% block content %}
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Аудит менеджеров</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Обнаружение подозрительной активности и кражи лидов</p>
+
+<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Период</label>
+            <select onchange="window.location.href='/audit?days='+this.value+'{% if selected_user_id %}&user_id={{ selected_user_id }}{% endif %}{% if selected_type %}&evidence_type={{ selected_type }}{% endif %}'" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="7" {% if days == 7 %}selected{% endif %}>За неделю</option>
+                <option value="30" {% if days == 30 %}selected{% endif %}>За месяц</option>
+                <option value="90" {% if days == 90 %}selected{% endif %}>За 3 месяца</option>
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Сотрудник</label>
+            <select onchange="var v=this.value;window.location.href='/audit?days={{ days }}'+(v?'&user_id='+v:''){% if selected_type %}&evidence_type={{ selected_type }}{% endif %}" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="">Все сотрудники</option>
+                {% for u in all_users %}
+                <option value="{{ u.id }}" {% if selected_user_id == u.id %}selected{% endif %}>{{ u.full_name or u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Тип нарушения</label>
+            <select onchange="var v=this.value;window.location.href='/audit?days={{ days }}{% if selected_user_id %}&user_id={{ selected_user_id }}{% endif %}'+(v?'&evidence_type='+v:'')" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="">Все типы</option>
+                <option value="fake_reject" {% if selected_type == 'fake_reject' %}selected{% endif %}>Фейковый отказ</option>
+                <option value="silent_take" {% if selected_type == 'silent_take' %}selected{% endif %}>Тихое взятие</option>
+                <option value="quick_deal" {% if selected_type == 'quick_deal' %}selected{% endif %}>Быстрое закрытие</option>
+            </select>
+        </div>
+        <a href="/audit/api/evidence?days={{ days }}" class="btn btn-outline btn-sm" style="text-decoration:none" target="_blank">JSON</a>
+    </div>
+</div>
+
+{% if evidence %}
+<div class="card" style="margin-bottom:16px;border-left:4px solid var(--danger)">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--danger)">⚠️ Подозрительная активность ({{ evidence|length }})</h3>
+    <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Уверенность</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Тип</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Сотрудник</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Лид</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Детали</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Действие</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in evidence %}
+                {% set user = user_map.get(e.suspect_user_id) %}
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 10px">
+                        <span style="display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600;background:{% if e.confidence >= 70 %}#fecaca{% elif e.confidence >= 50 %}#fef3c7{% else %}#e5e7eb{% endif %};color:{% if e.confidence >= 70 %}#991b1b{% elif e.confidence >= 50 %}#92400e{% else %}#374151{% endif %}">{{ e.confidence|int }}%</span>
+                    </td>
+                    <td style="padding:8px 10px">
+                        {% if e.evidence_type == 'fake_reject' %}
+                        <span style="color:#dc2626">Фейковый отказ</span>
+                        {% elif e.evidence_type == 'silent_take' %}
+                        <span style="color:#d97706">Тихое взятие</span>
+                        {% elif e.evidence_type == 'quick_deal' %}
+                        <span style="color:#7c3aed">Быстрое закрытие</span>
+                        {% else %}
+                        {{ e.evidence_type }}
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px 10px">
+                        {% if user %}{{ user.full_name or user.username }}{% else %}ID: {{ e.suspect_user_id }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px">
+                        <a href="/leads/{{ e.lead_id }}" style="color:var(--primary);text-decoration:none">#{{ e.lead_id }}</a>
+                    </td>
+                    <td style="padding:8px 10px;font-size:12px;color:var(--text-secondary)">
+                        {% if e.evidence_type == 'fake_reject' %}
+                            Отказ: {{ e.details.get('reject_time', '?')[:10] }} → Возврат: {{ e.details.get('reappear_time', '?')[:10] }} ({{ e.details.get('days_diff', '?') }} дн.)
+                        {% elif e.evidence_type == 'silent_take' %}
+                            Назначен: {{ e.details.get('assigned_at', '?')[:10] }} ({{ e.details.get('hours_since', '?') }} ч. без действий)
+                        {% elif e.evidence_type == 'quick_deal' %}
+                            {{ e.details.get('hours_diff', '?') }} ч. от назначения до сделки, {{ e.details.get('action_count', 0) }} действий
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">
+                        <form method="POST" action="/audit/confirm" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="evidence_type" value="{{ e.evidence_type }}">
+                            <input type="hidden" name="lead_id" value="{{ e.lead_id }}">
+                            <input type="hidden" name="suspect_user_id" value="{{ e.suspect_user_id }}">
+                            <input type="hidden" name="confidence" value="{{ e.confidence }}">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Подтвердить нарушение и создать штраф?')">Подтвердить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card" style="margin-bottom:16px;border-left:4px solid #16a34a">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:8px;color:#16a34a">✅ Подозрительная активность не обнаружена</h3>
+    <p style="font-size:13px;color:var(--text-secondary)">За выбранный период все менеджеры работают честно.</p>
+</div>
+{% endif %}
+
+{% if confirmed %}
+<div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Подтверждённые нарушения ({{ confirmed|length }})</h3>
+    <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Дата</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Сотрудник</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Лид</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Тип</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Уверенность</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in confirmed %}
+                {% set user = user_map.get(e.suspect_user_id) %}
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ e.created_at.strftime('%d.%m.%Y %H:%M') if e.created_at else '—' }}</td>
+                    <td style="padding:8px 10px">
+                        {% if user %}{{ user.full_name or user.username }}{% else %}ID: {{ e.suspect_user_id }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px">
+                        <a href="/leads/{{ e.lead_id }}" style="color:var(--primary);text-decoration:none">#{{ e.lead_id }}</a>
+                    </td>
+                    <td style="padding:8px 10px">{{ e.evidence_type }}</td>
+                    <td style="padding:8px 10px;text-align:center">{{ e.confidence|int }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Как работает обнаружение</h3>
+    <div style="font-size:13px;color:var(--text-secondary)">
+        <p><strong>Фейковый отказ</strong> — менеджер пометил лид как "не лид", но клиент вернулся в систему менее чем через 30 дней.</p>
+        <p><strong>Тихое взятие</strong> — менеджер взял лид, но нет действий (первый контакт, ответ клиента) более 24 часов.</p>
+        <p><strong>Быстрое закрытие</strong> — сделка закрыта менее чем через 1 час после назначения без промежуточных действий.</p>
+    </div>
+</div>
+{% endblock %}

@@ -2,17 +2,25 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
-from fastapi import FastAPI, Request, Form, Query, HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import FastAPI, Request, Form, Query, HTTPException, UploadFile, File, status
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, and_, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
+
+# Rate limiter for login: {ip: [timestamp, ...]}
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 900  # 15 minutes
+LOGIN_LOCKOUT_SECONDS = 1800  # 30 minutes
 
 from app.models import Lead, User, LeadHistory, BlacklistedUser, Base, engine, async_session, Tenant, TelegramSession, MessageTemplate, Webhook
 from app.repositories import (
@@ -20,7 +28,8 @@ from app.repositories import (
     LeadHistoryRepository, BlacklistedUserRepository, TelegramSessionRepository,
     TenantUsageRepository, ActionLogRepository, MessageTemplateRepository, WebhookRepository,
     EmployeeTargetRepository, CommissionRepository, PenaltyRepository, WorkSessionRepository,
-    ResponseTimeRepository, LeadSourceRepository,
+    ResponseTimeRepository, LeadSourceRepository, ManagerActionRepository, ManagerContractRepository,
+    TheftDetectionRepository,
 )
 from app.config_manager import TenantConfig
 from app.auth import (
@@ -38,21 +47,29 @@ from app.security import (
     sanitize_input,
     protect_env_file,
 )
-from config import settings
+from config import settings, utcnow
 
 logger = logging.getLogger(__name__)
 
 CHATS_FILE = Path("config_chats.json")
 
 
-def _load_chats() -> list[str]:
+def _load_chats() -> list[dict]:
     if CHATS_FILE.exists():
-        return json.loads(CHATS_FILE.read_text())
+        data = json.loads(CHATS_FILE.read_text())
+        if data and isinstance(data[0], str):
+            data = [{"url": c, "active": True} for c in data]
+            _save_chats(data)
+        return data
     return []
 
 
-def _save_chats(chats: list[str]):
+def _save_chats(chats: list[dict]):
     CHATS_FILE.write_text(json.dumps(chats, ensure_ascii=False, indent=2))
+
+
+def _get_active_chat_urls() -> list[str]:
+    return [c["url"] for c in _load_chats() if c.get("active", True)]
 
 
 templates = Jinja2Templates(directory="app/templates")
@@ -67,6 +84,42 @@ def _to_msk(dt):
     return dt.astimezone(MSK)
 
 templates.env.filters["msk"] = _to_msk
+
+def _time_ago(dt):
+    if dt is None:
+        return ""
+    from datetime import datetime
+    now = utcnow()
+    if dt.tzinfo is None:
+        pass
+    else:
+        dt = dt.replace(tzinfo=None)
+    diff = now - dt
+    seconds = int(diff.total_seconds())
+    if seconds < 60:
+        return "только что"
+    elif seconds < 3600:
+        mins = seconds // 60
+        return f"{mins} мин назад"
+    elif seconds < 86400:
+        hours = seconds // 3600
+        return f"{hours} ч назад"
+    elif seconds < 604800:
+        days = seconds // 86400
+        return f"{days} дн назад"
+    else:
+        weeks = seconds // 604800
+        return f"{weeks} нед назад"
+
+templates.env.filters["time_ago"] = _time_ago
+
+def _jinja_int(value):
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return 0
+
+templates.env.filters["int"] = _jinja_int
 
 
 async def _get_theme_context(user) -> dict:
@@ -100,7 +153,8 @@ async def _get_theme_context(user) -> dict:
 
 async def _template_ctx(user, **kwargs) -> dict:
     theme = await _get_theme_context(user)
-    return {**theme, "user": user, **kwargs}
+    from config import settings
+    return {**theme, "user": user, "vapid_public_key": settings.vapid_public_key, **kwargs}
 
 
 def _get_session_id(request: Request) -> str:
@@ -176,6 +230,56 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 setup_security(app)
 
 
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    body = await request.json()
+    subscription = body.get("subscription")
+    if not subscription:
+        return JSONResponse({"error": "no subscription"}, status_code=400)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        user_obj = await session.get(User, user.id)
+        if user_obj:
+            push_subs = user_obj.push_subscriptions or []
+            endpoint = subscription.get("endpoint", "")
+            push_subs = [s for s in push_subs if s.get("endpoint") != endpoint]
+            push_subs.append(subscription)
+            user_obj.push_subscriptions = push_subs[-3:]
+            await session.commit()
+
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    body = await request.json()
+    endpoint = body.get("endpoint", "")
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        user_obj = await session.get(User, user.id)
+        if user_obj and user_obj.push_subscriptions:
+            user_obj.push_subscriptions = [s for s in user_obj.push_subscriptions if s.get("endpoint") != endpoint]
+            await session.commit()
+
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/push/vapid-public-key")
+async def push_vapid_key():
+    from config import settings
+    return JSONResponse({"key": settings.vapid_public_key})
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = Query(None)):
     user = await get_current_user(request)
@@ -190,7 +294,8 @@ async def login_page(request: Request, error: str = Query(None)):
         if default_tenant and default_tenant.config:
             theme_color = default_tenant.config.get("theme_color", theme_color)
     
-    ctx = await _template_ctx(None, error=error, theme_color=theme_color)
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(None, error=error, theme_color=theme_color, csrf_token=csrf)
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
@@ -199,13 +304,31 @@ async def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    csrf_token: str = Form(""),
 ):
+    # Rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    _login_attempts[client_ip] = [t for t in _login_attempts[client_ip] if now - t < LOGIN_WINDOW_SECONDS]
+    if len(_login_attempts[client_ip]) >= LOGIN_MAX_ATTEMPTS:
+        remaining = int(LOGIN_LOCKOUT_SECONDS - (now - _login_attempts[client_ip][0]))
+        if remaining > 0:
+            return RedirectResponse(f"/login?error=Слишком много попыток. Подождите {remaining//60} мин.", status_code=303)
+
+    # CSRF validation
+    if not validate_csrf_token(csrf_token):
+        return RedirectResponse("/login?error=Ошибка CSRF. Попробуйте снова.", status_code=303)
+
     async with async_session() as session:
         result = await session.execute(select(User).where(User.username == username))
         user = result.scalar_one_or_none()
 
     if not user or not verify_password(password, user.password_hash):
+        _login_attempts[client_ip].append(now)
         return RedirectResponse("/login?error=Неверный логин или пароль", status_code=303)
+
+    # Clear rate limit on success
+    _login_attempts.pop(client_ip, None)
 
     async with async_session() as session:
         if user.tenant_id:
@@ -302,18 +425,52 @@ async def dashboard(request: Request):
 
     tenant_id = await _get_tenant_id(user)
     manager_filter = Lead.assigned_to == user.id if user.role == "manager" else None
+    period = request.query_params.get("period", "week")
 
     async with async_session() as session:
         leads = LeadRepository(session, tenant_id)
-        now = datetime.utcnow()
+        now = utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = now - timedelta(days=7)
+        month_start = now - timedelta(days=30)
 
-        total = await leads.count()
+        if period == "today":
+            period_start = today_start
+        elif period == "month":
+            period_start = month_start
+        elif period == "week":
+            period_start = week_start
+        else:
+            period_start = None
+            period = "all"
+
+        total_filters = [Lead.status != "deleted"]
+        if tenant_id is not None:
+            total_filters.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            total_filters.append(manager_filter)
+        if period_start:
+            total_filters.append(Lead.created_at >= period_start)
+        total = (await session.execute(
+            select(func.count(Lead.id)).where(*total_filters)
+        )).scalar() or 0
+
         new_today = await leads.count_today(today_start)
+        new_today_quality = await leads.count_today_quality(today_start)
         new_week = await leads.count_this_week(week_start)
 
-        status_rows = await leads.count_by_status()
+        status_filters = [Lead.status != "deleted"]
+        if tenant_id is not None:
+            status_filters.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            status_filters.append(manager_filter)
+        if period_start:
+            status_filters.append(Lead.created_at >= period_start)
+        status_rows = (await session.execute(
+            select(Lead.status, func.count(Lead.id))
+            .where(*status_filters)
+            .group_by(Lead.status)
+        )).fetchall()
         status_counts = {s: c for s, c in status_rows}
 
         # Top chats
@@ -322,6 +479,8 @@ async def dashboard(request: Request):
             chat_filters.append(Lead.tenant_id == tenant_id)
         if manager_filter:
             chat_filters.append(manager_filter)
+        if period_start:
+            chat_filters.append(Lead.created_at >= period_start)
         chat_q = (
             select(Lead.chat_title, func.count(Lead.id))
             .where(*chat_filters)
@@ -337,6 +496,8 @@ async def dashboard(request: Request):
             recent_filters.append(Lead.tenant_id == tenant_id)
         if manager_filter:
             recent_filters.append(manager_filter)
+        if period_start:
+            recent_filters.append(Lead.created_at >= period_start)
         recent_q = select(Lead).where(*recent_filters).order_by(Lead.created_at.desc()).limit(20)
         recent_leads = (await session.execute(recent_q)).scalars().all()
 
@@ -388,7 +549,7 @@ async def dashboard(request: Request):
         overdue_count = (await session.execute(overdue_q)).scalar() or 0
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, total=total, new_today=new_today, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, attention_leads=attention_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=datetime.utcnow())
+    ctx = await _template_ctx(user, total=total, new_today=new_today, new_today_quality=new_today_quality, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, attention_leads=attention_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=utcnow(), period=period)
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -513,8 +674,18 @@ async def leads_list(
             select(Lead.chat_title).distinct().where(*ch_filters).order_by(Lead.chat_title)
         )).fetchall()]
 
+        # New leads this week
+        week_start = utcnow() - timedelta(days=utcnow().weekday())
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        nw_filters = [Lead.created_at >= week_start, Lead.status != "deleted"]
+        if tenant_id is not None:
+            nw_filters.append(Lead.tenant_id == tenant_id)
+        if manager_id:
+            nw_filters.append(Lead.assigned_to == manager_id)
+        new_week = (await session.execute(select(func.count(Lead.id)).where(*nw_filters))).scalar() or 0
+
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=datetime.utcnow())
+    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=utcnow(), new_week=new_week)
     return templates.TemplateResponse(request, "leads.html", ctx)
 
 
@@ -613,7 +784,7 @@ async def leads_export_csv(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=leads_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"},
+        headers={"Content-Disposition": f"attachment; filename=leads_{utcnow().strftime('%Y%m%d_%H%M%S')}.csv"},
     )
 
 
@@ -653,6 +824,12 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
             meta={"chat": lead.chat_title, "score": lead.lead_score},
         )
 
+        # Record first response time (when assigned user views the lead)
+        if lead.assigned_to == user.id:
+            from app.repositories import ResponseTimeRepository
+            resp_repo = ResponseTimeRepository(session, tenant_id)
+            await resp_repo.record_response(lead_id)
+
         assignee = None
         if lead.assigned_to:
             users = UserRepository(session, tenant_id)
@@ -663,11 +840,40 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
 
         prev_id, next_id = await leads.get_prev_next(lead_id)
 
+        from app.models import Appointment, FollowUp
+        from sqlalchemy import select as sel
+        appointments = (await session.execute(
+            sel(Appointment).where(Appointment.lead_id == lead_id).order_by(Appointment.scheduled_at.desc())
+        )).scalars().all()
+        follow_ups = (await session.execute(
+            sel(FollowUp).where(FollowUp.lead_id == lead_id, FollowUp.status == "pending").order_by(FollowUp.scheduled_at.asc())
+        )).scalars().all()
+
+        lead_data = {
+            "id": lead.id, "user_id": lead.user_id, "username": lead.username,
+            "first_name": lead.first_name, "last_name": lead.last_name,
+            "profile_link": lead.profile_link, "message_text": lead.message_text,
+            "reply_to_id": lead.reply_to_id, "reply_to_text": lead.reply_to_text,
+            "chat_title": lead.chat_title, "chat_username": lead.chat_username,
+            "message_id": lead.message_id, "lead_score": lead.lead_score,
+            "urgency": lead.urgency, "reason": lead.reason,
+            "recommended_message": lead.recommended_message, "status": lead.status,
+            "assigned_to": lead.assigned_to, "phone": lead.phone,
+            "deal_amount": lead.deal_amount, "deal_currency": lead.deal_currency,
+            "deal_closed_at": lead.deal_closed_at, "is_notified": lead.is_notified,
+            "feedback": lead.feedback, "feedback_reason": lead.feedback_reason,
+            "last_responded_at": lead.last_responded_at, "created_at": lead.created_at,
+            "updated_at": lead.updated_at,
+            "hotness": lead.hotness, "ai_summary": lead.ai_summary,
+            "next_action": lead.next_action, "budget": lead.budget,
+            "timeline": lead.timeline, "readiness": lead.readiness,
+        }
+
     from app.ml_scorer import score_lead
     ml_prediction = await score_lead(lead, tenant_id)
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error, ml_prediction=ml_prediction)
+    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error, ml_prediction=ml_prediction, appointments=appointments, follow_ups=follow_ups)
     return templates.TemplateResponse(request, "lead_detail.html", ctx)
 
 
@@ -686,9 +892,21 @@ async def lead_feedback(request: Request, lead_id: int, feedback: str = Form(...
             return RedirectResponse("/leads", status_code=303)
 
         if feedback in ("useful", "not_useful"):
+            is_new_feedback = lead.feedback != feedback
             lead.feedback = feedback
             lead.feedback_reason = reason if reason else None
             await session.commit()
+
+            # Train ML on feedback only if feedback changed
+            if is_new_feedback:
+                try:
+                    from app.ml_scorer import train_on_outcome
+                    if feedback == "useful":
+                        train_on_outcome(lead, is_positive=True, learning_rate=0.03)
+                    else:
+                        train_on_outcome(lead, is_positive=False, learning_rate=0.03)
+                except Exception:
+                    pass
 
     return RedirectResponse(f"/leads/{lead_id}?success=Оценка+сохранена", status_code=303)
 
@@ -849,6 +1067,7 @@ async def update_status(
     lead_id: int,
     lead_status: str = Form(..., alias="status"),
     deal_comment: str = Form(""),
+    deal_amount: str = Form(""),
     csrf_token: str = Form(""),
 ):
     user = await get_current_user(request)
@@ -858,12 +1077,15 @@ async def update_status(
     if not validate_csrf_token(csrf_token):
         return HTMLResponse(content="Invalid CSRF token", status_code=403)
 
-    valid_statuses = {"new", "contacted", "interested", "not_interested", "deal", "archive", "deleted"}
+    valid_statuses = {"new", "contacted", "interested", "not_interested", "deal", "archive", "deleted", "missed_call", "in_progress"}
     if lead_status not in valid_statuses:
         return HTMLResponse(content="Invalid status", status_code=400)
 
     if lead_status == "deal" and not deal_comment.strip():
         return RedirectResponse(f"/leads/{lead_id}?error=Для статуса «Сделка» обязателен комментарий", status_code=303)
+
+    if lead_status == "not_interested" and not deal_comment.strip():
+        return RedirectResponse(f"/leads/{lead_id}?error=Для статуса «Не интересует» обязателена причина", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
 
@@ -880,6 +1102,16 @@ async def update_status(
         old_status = lead.status
         lead.status = lead_status
 
+        if lead_status == "not_interested" and deal_comment.strip():
+            lead.feedback_reason = deal_comment.strip()[:50]
+
+        if lead_status == "deal" and deal_amount.strip():
+            try:
+                lead.deal_amount = float(deal_amount.strip().replace(" ", ""))
+                lead.deal_closed_at = utcnow()
+            except (ValueError, TypeError):
+                pass
+
         history = LeadHistoryRepository(session, tenant_id)
         history_note = f"{user.full_name or user.username} изменил статус"
         if deal_comment.strip():
@@ -894,13 +1126,164 @@ async def update_status(
         )
         await ActionLogRepository(session, tenant_id).log(
             user.id, "status_change", lead_id=lead_id,
-            meta={"from": old_status, "to": lead_status},
+            meta={"old": old_status, "new": lead_status},
         )
+
+        # Record response time when manager first contacts the lead
+        if lead_status == "contacted" and old_status == "new":
+            try:
+                from app.repositories import ResponseTimeRepository
+                resp_repo = ResponseTimeRepository(session, tenant_id)
+                await resp_repo.record_response(lead_id)
+            except Exception:
+                pass
+
         await session.commit()
+
+        # Train ML on outcome
+        try:
+            from app.ml_scorer import train_on_outcome
+            if lead_status == "deal":
+                lead.feedback = "useful"
+                train_on_outcome(lead, is_positive=True)
+            elif lead_status in ("not_interested", "deleted"):
+                lead.feedback = "not_useful"
+                train_on_outcome(lead, is_positive=False)
+        except Exception:
+            pass
     await _fire_webhooks(tenant_id, "status_change", {"lead_id": lead_id, "from": old_status, "to": lead_status})
     if lead_status == "deal":
         await _fire_webhooks(tenant_id, "deal_closed", {"lead_id": lead_id, "score": lead.lead_score if lead else 0})
     return RedirectResponse(f"/leads/{lead_id}?success=Статус+изменён", status_code=303)
+
+
+@app.post("/leads/{lead_id}/phone")
+async def update_phone(
+    request: Request,
+    lead_id: int,
+    phone: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        lead = await leads.get_by_id(lead_id)
+
+        if not lead:
+            return RedirectResponse("/leads", status_code=303)
+
+        if user.role == "manager" and lead.assigned_to != user.id:
+            return RedirectResponse("/leads", status_code=303)
+
+        lead.phone = phone.strip()[:20] if phone.strip() else None
+
+        history = LeadHistoryRepository(session, tenant_id)
+        await history.create(
+            lead_id=lead_id,
+            user_id=user.id,
+            action="phone_update",
+            note=f"Телефон: {lead.phone or 'удалён'}",
+        )
+        await session.commit()
+
+    return RedirectResponse(f"/leads/{lead_id}?success=Телефон+обновлён", status_code=303)
+
+
+@app.post("/leads/{lead_id}/appointment")
+async def create_appointment(
+    request: Request,
+    lead_id: int,
+    scheduled_at: str = Form(...),
+    title: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        lead = await leads.get_by_id(lead_id)
+
+        if not lead:
+            return RedirectResponse("/leads", status_code=303)
+
+        from app.repositories import AppointmentRepository
+        from datetime import datetime
+
+        try:
+            dt = datetime.fromisoformat(scheduled_at)
+        except ValueError:
+            return RedirectResponse(f"/leads/{lead_id}?error=Неверная+дата", status_code=303)
+
+        apt_repo = AppointmentRepository(session, tenant_id)
+        await apt_repo.create(
+            lead_id=lead_id,
+            user_id=user.id,
+            title=title or f"Замер — {lead.first_name or ''} {lead.last_name or ''}".strip(),
+            scheduled_at=dt,
+        )
+
+        history = LeadHistoryRepository(session, tenant_id)
+        await history.create(
+            lead_id=lead_id,
+            user_id=user.id,
+            action="appointment_created",
+            note=f"Запланировано: {title} на {dt.strftime('%d.%m.%Y %H:%M')}",
+        )
+        await session.commit()
+
+    return RedirectResponse(f"/leads/{lead_id}?success=Встреча+запланирована", status_code=303)
+
+
+@app.post("/appointments/{apt_id}/complete")
+async def complete_appointment(
+    request: Request,
+    apt_id: int,
+    csrf_token: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        from app.repositories import AppointmentRepository
+        apt_repo = AppointmentRepository(session, tenant_id)
+        apt = await apt_repo.get_by_id(apt_id)
+
+        if not apt:
+            return RedirectResponse("/leads", status_code=303)
+
+        await apt_repo.complete(apt_id)
+
+        history = LeadHistoryRepository(session, tenant_id)
+        await history.create(
+            lead_id=apt.lead_id,
+            user_id=user.id,
+            action="appointment_completed",
+            note=f"Встреча завершена: {apt.title}",
+        )
+        await session.commit()
+
+    return RedirectResponse(f"/leads/{apt.lead_id}?success=Встреча+завершена", status_code=303)
 
 
 @app.post("/leads/{lead_id}/delete")
@@ -1003,7 +1386,7 @@ async def leads_bulk_action(
                     note=f"{user.full_name or user.username} (массовое удаление)",
                 )
                 await action_log.log(user.id, "status_change", lead_id=lid, meta={"from": old, "to": "deleted"})
-        elif action in ("new", "contacted", "interested", "not_interested", "deal", "archive", "deleted"):
+        elif action in ("new", "contacted", "interested", "not_interested", "deal", "archive", "deleted", "missed_call", "in_progress"):
             for lid in valid_ids:
                 lead_obj = await leads.get_by_id(lid)
                 old = lead_obj.status if lead_obj else None
@@ -1089,6 +1472,11 @@ async def lead_assign(
 
         old_assignee = lead.assigned_to
         lead.assigned_to = assigned_to
+
+        # Record response time tracking
+        from app.repositories import ResponseTimeRepository
+        resp_repo = ResponseTimeRepository(session, tenant_id)
+        await resp_repo.record_assignment(assigned_to, lead_id)
 
         history = LeadHistoryRepository(session, tenant_id)
         await history.create(
@@ -1288,14 +1676,244 @@ async def analytics(request: Request):
                 deal_filters.append(Lead.tenant_id == tenant_id)
             deal_count = (await session.execute(select(func.count(Lead.id)).where(*deal_filters))).scalar() or 0
             conv = (deal_count / count * 100) if count > 0 else 0
-            source_data.append({"chat": chat_title, "total": count, "deals": deal_count, "avg_score": round(avg_score or 0, 1), "conversion": round(conv, 1)})
+
+            # Revenue from this source
+            rev_filters = [Lead.chat_title == chat_title, Lead.deal_amount.isnot(None)]
+            if tenant_id is not None:
+                rev_filters.append(Lead.tenant_id == tenant_id)
+            revenue = (await session.execute(select(func.sum(Lead.deal_amount)).where(*rev_filters))).scalar() or 0
+
+            source_data.append({"chat": chat_title, "total": count, "deals": deal_count, "avg_score": round(avg_score or 0, 1), "conversion": round(conv, 1), "revenue": revenue})
+
+    # Period comparison: this week vs last week
+    now = utcnow()
+    this_week_start = now - timedelta(days=7)
+    last_week_start = now - timedelta(days=14)
+
+    # This week stats
+    tw_filters = [Lead.status != "deleted", Lead.created_at >= this_week_start]
+    if tenant_id is not None:
+        tw_filters.append(Lead.tenant_id == tenant_id)
+    this_week_leads = (await session.execute(select(func.count(Lead.id)).where(*tw_filters))).scalar() or 0
+    this_week_deals = (await session.execute(select(func.count(Lead.id)).where(*tw_filters, Lead.status == "deal"))).scalar() or 0
+    this_week_avg_result = (await session.execute(select(func.avg(Lead.lead_score)).where(*tw_filters))).scalar()
+    this_week_avg_score = round(this_week_avg_result, 1) if this_week_avg_result else 0
+
+    # Last week stats
+    lw_filters = [Lead.status != "deleted", Lead.created_at >= last_week_start, Lead.created_at < this_week_start]
+    if tenant_id is not None:
+        lw_filters.append(Lead.tenant_id == tenant_id)
+    last_week_leads = (await session.execute(select(func.count(Lead.id)).where(*lw_filters))).scalar() or 0
+    last_week_deals = (await session.execute(select(func.count(Lead.id)).where(*lw_filters, Lead.status == "deal"))).scalar() or 0
+    last_week_avg_result = (await session.execute(select(func.avg(Lead.lead_score)).where(*lw_filters))).scalar()
+    last_week_avg_score = round(last_week_avg_result, 1) if last_week_avg_result else 0
+
+    # Leads by day (last 7 days)
+    leads_by_day = []
+    for i in range(6, -1, -1):
+        day = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_next = day + timedelta(days=1)
+        day_filters = [Lead.status != "deleted", Lead.created_at >= day, Lead.created_at < day_next]
+        if tenant_id is not None:
+            day_filters.append(Lead.tenant_id == tenant_id)
+        day_count = (await session.execute(select(func.count(Lead.id)).where(*day_filters))).scalar() or 0
+        leads_by_day.append((day.strftime("%d.%m"), day_count))
 
     # Get feedback analysis
     from app.analyzer import analyze_feedback
     feedback_data = await analyze_feedback(tenant_id)
 
-    ctx = await _template_ctx(user, by_chat=data["by_chat"], by_status=data["by_status"], avg_score=data["avg_score"], high_score=data["high_score"], medium_score=data["medium_score"], total=data["total_leads"], feedback_data=feedback_data, funnel=funnel, source_data=source_data)
+    # Get prediction stats
+    prediction_stats = None
+    try:
+        from app.ml_scorer import score_lead
+        from app.models import Lead as LeadModel
+        pred_q = select(LeadModel).where(
+            LeadModel.status.notin_(["deleted", "archive"]),
+            LeadModel.lead_score.isnot(None),
+        )
+        if tenant_id:
+            pred_q = pred_q.where(LeadModel.tenant_id == tenant_id)
+        pred_leads = (await session.execute(pred_q.limit(100))).scalars().all()
+
+        if pred_leads:
+            high_prob = 0
+            medium_prob = 0
+            low_prob = 0
+            total_prob = 0
+
+            for lead in pred_leads:
+                pred = await score_lead(lead, tenant_id)
+                prob = pred.get("probability", 0)
+                total_prob += prob
+                if prob >= 70:
+                    high_prob += 1
+                elif prob >= 40:
+                    medium_prob += 1
+                else:
+                    low_prob += 1
+
+            prediction_stats = {
+                "high_probability": high_prob,
+                "medium_probability": medium_prob,
+                "low_probability": low_prob,
+                "avg_probability": round(total_prob / len(pred_leads), 1) if pred_leads else 0,
+            }
+    except Exception:
+        pass
+
+    hotness_stats = {"hot": 0, "warm": 0, "cold": 0, "total": 0}
+    try:
+        from sqlalchemy import func as sa_func
+        hot_q = select(Lead.hotness, sa_func.count(Lead.id)).where(
+            Lead.status.notin_(["deleted", "archive"])
+        )
+        if tenant_id:
+            hot_q = hot_q.where(Lead.tenant_id == tenant_id)
+        hot_q = hot_q.group_by(Lead.hotness)
+        hot_rows = (await session.execute(hot_q)).all()
+        for h, c in hot_rows:
+            if h in ("hot", "warm", "cold"):
+                hotness_stats[h] = c
+                hotness_stats["total"] += c
+    except Exception:
+        pass
+
+    ctx = await _template_ctx(user,
+        by_chat=data["by_chat"], by_status=data["by_status"], avg_score=data["avg_score"],
+        high_score=data["high_score"], medium_score=data["medium_score"], total=data["total_leads"],
+        feedback_data=feedback_data, funnel=funnel, source_data=source_data,
+        this_week_leads=this_week_leads, last_week_leads=last_week_leads,
+        this_week_deals=this_week_deals, last_week_deals=last_week_deals,
+        this_week_avg_score=this_week_avg_score, last_week_avg_score=last_week_avg_score,
+        leads_by_day=leads_by_day, prediction_stats=prediction_stats,
+        hotness_stats=hotness_stats,
+    )
     return templates.TemplateResponse(request, "analytics.html", ctx)
+
+
+@app.get("/analytics/pdf")
+async def analytics_pdf(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        data = await leads.get_analytics()
+
+        # Funnel data
+        funnel_statuses = ["new", "contacted", "interested", "deal"]
+        funnel_filters = []
+        if tenant_id is not None:
+            funnel_filters.append(Lead.tenant_id == tenant_id)
+        funnel_q = select(Lead.status, func.count(Lead.id)).where(*funnel_filters).group_by(Lead.status)
+        funnel_rows = (await session.execute(funnel_q)).fetchall()
+        funnel_map = {s: c for s, c in funnel_rows}
+        funnel = [(s, funnel_map.get(s, 0)) for s in funnel_statuses]
+
+        # Source report
+        source_filters = [Lead.status != "deleted"]
+        if tenant_id is not None:
+            source_filters.append(Lead.tenant_id == tenant_id)
+        source_q = (
+            select(Lead.chat_title, func.count(Lead.id), func.avg(Lead.lead_score))
+            .where(*source_filters)
+            .group_by(Lead.chat_title)
+            .order_by(func.count(Lead.id).desc())
+            .limit(15)
+        )
+        source_rows = (await session.execute(source_q)).fetchall()
+        source_data = []
+        for chat_title, count, avg_score in source_rows:
+            deal_filters = [Lead.chat_title == chat_title, Lead.status == "deal"]
+            if tenant_id is not None:
+                deal_filters.append(Lead.tenant_id == tenant_id)
+            deal_count = (await session.execute(select(func.count(Lead.id)).where(*deal_filters))).scalar() or 0
+            conv = (deal_count / count * 100) if count > 0 else 0
+            source_data.append({"chat": chat_title, "total": count, "deals": deal_count, "avg_score": round(avg_score or 0, 1), "conversion": round(conv, 1)})
+
+        # Status distribution
+        status_filters = []
+        if tenant_id is not None:
+            status_filters.append(Lead.tenant_id == tenant_id)
+        status_q = select(Lead.status, func.count(Lead.id)).where(*status_filters).group_by(Lead.status)
+        status_rows = (await session.execute(status_q)).fetchall()
+        status_dist = {s: c for s, c in status_rows}
+
+    from fpdf import FPDF
+    import io
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Title
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Аналитика — Lead Hunter", ln=True, align="C")
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 6, f"Сформировано: {utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ln=True, align="C")
+    pdf.ln(8)
+
+    # Summary stats
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Сводка", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 7, f"Всего лидов: {data['total_leads']}", ln=True)
+    pdf.cell(0, 7, f"Средний Lead Score: {data['avg_score']}", ln=True)
+    pdf.cell(0, 7, f"Горячие лиды (90+): {data['high_score']}", ln=True)
+    pdf.cell(0, 7, f"Тёплые лиды (70-89): {data['medium_score']}", ln=True)
+    pdf.ln(5)
+
+    # Sales funnel
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Воронка продаж", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    funnel_labels = {"new": "Новые", "contacted": "Контакт", "interested": "Заинтересованы", "deal": "Сделки"}
+    for status, count in funnel:
+        pdf.cell(0, 7, f"{funnel_labels.get(status, status)}: {count}", ln=True)
+    pdf.ln(5)
+
+    # Source report table
+    if source_data:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Отчёт по источникам", ln=True)
+        col_w = [60, 20, 20, 25, 25]
+        headers = ["Чат", "Лидов", "Сделок", "Ср. Score", "Конверсия"]
+        pdf.set_font("Helvetica", "B", 9)
+        for i, h in enumerate(headers):
+            pdf.cell(col_w[i], 7, h, border=1, align="C")
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 9)
+        for s in source_data:
+            vals = [s["chat"][:30], str(s["total"]), str(s["deals"]), str(s["avg_score"]), f"{s['conversion']}%"]
+            for i, v in enumerate(vals):
+                pdf.cell(col_w[i], 7, v, border=1, align="C" if i > 0 else "L")
+            pdf.ln()
+        pdf.ln(5)
+
+    # Status distribution
+    if status_dist:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Распределение по статусам", ln=True)
+        status_labels = {"new": "Новые", "contacted": "Контакт", "interested": "Заинтересованы",
+                         "not_interested": "Не интересуют", "deal": "Сделки", "archive": "Архив", "deleted": "Удалённые"}
+        pdf.set_font("Helvetica", "", 10)
+        for status, count in sorted(status_dist.items(), key=lambda x: -x[1]):
+            pdf.cell(0, 7, f"{status_labels.get(status, status)}: {count}", ln=True)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+
+    filename = f"analytics_{utcnow().strftime('%Y%m%d_%H%M')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/team", response_class=HTMLResponse)
@@ -1342,6 +1960,29 @@ async def team_page(request: Request):
             interested = status_counts.get("interested", 0)
             new_leads = status_counts.get("new", 0)
 
+            # Conversion rate
+            conversion = round(deals / leads_total * 100, 1) if leads_total > 0 else 0
+
+            # Revenue from deals
+            revenue = (await session.execute(
+                select(func.sum(Lead.deal_amount)).where(
+                    Lead.assigned_to == u.id,
+                    Lead.deal_amount.isnot(None),
+                    Lead.tenant_id == tenant_id if tenant_id else True,
+                )
+            )).scalar() or 0
+
+            # Average response time
+            from app.models import ResponseTimeLog
+            avg_response = (await session.execute(
+                select(func.avg(ResponseTimeLog.response_seconds)).where(
+                    ResponseTimeLog.user_id == u.id,
+                    ResponseTimeLog.response_seconds.isnot(None),
+                    ResponseTimeLog.tenant_id == tenant_id if tenant_id else True,
+                )
+            )).scalar() or 0
+            avg_response_minutes = round(avg_response / 60, 0) if avg_response else None
+
             team_data.append({
                 "user": u,
                 "leads_total": leads_total,
@@ -1353,12 +1994,26 @@ async def team_page(request: Request):
                 "contacted": contacted,
                 "interested": interested,
                 "new_leads": new_leads,
+                "conversion": conversion,
+                "revenue": revenue,
+                "avg_response_minutes": int(avg_response_minutes) if avg_response_minutes else None,
             })
 
         total_team_leads = sum(d["leads_total"] for d in team_data)
         total_deals = sum(d["deals"] for d in team_data)
 
-    ctx = await _template_ctx(user, team_data=team_data, total_team_leads=total_team_leads, total_deals=total_deals)
+        # Average response time across team
+        avg_response_time = "—"
+        if team_data:
+            times = [d["avg_response_minutes"] for d in team_data if d["avg_response_minutes"]]
+            if times:
+                avg_response_time = f"{round(sum(times)/len(times))}мин"
+
+        # Leaderboard (top by deals)
+        leaderboard = sorted(team_data, key=lambda x: (x["deals"], x["conversion"]), reverse=True)[:5]
+        leaderboard = [{"name": d["user"].full_name or d["user"].username, "deals": d["deals"], "conversion": d["conversion"], "revenue": d["revenue"]} for d in leaderboard if d["deals"] > 0]
+
+    ctx = await _template_ctx(user, team_data=team_data, total_team_leads=total_team_leads, total_deals=total_deals, avg_response_time=avg_response_time, leaderboard=leaderboard)
     return templates.TemplateResponse(request, "team.html", ctx)
 
 
@@ -1369,7 +2024,7 @@ async def team_kpi_page(request: Request):
         return RedirectResponse("/login", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
-    today = datetime.utcnow()
+    today = utcnow()
     current_period = today.strftime("%Y-%m")
 
     async with async_session() as session:
@@ -1455,6 +2110,67 @@ async def team_kpi_set_target(
     return RedirectResponse("/team/kpi?success=Цель+установлена", status_code=303)
 
 
+@app.get("/team/kpi/export/csv")
+async def team_kpi_export_csv(request: Request, period: str = Query(None)):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    if not period:
+        period = utcnow().strftime("%Y-%m")
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+        user_map = {u.id: u for u in active_users}
+
+        leads_repo = LeadRepository(session, tenant_id)
+        from sqlalchemy import func as sa_func
+        period_start = datetime.strptime(f"{period}-01", "%Y-%m-%d")
+        if period_start.month == 12:
+            period_end = period_start.replace(year=period_start.year + 1, month=1)
+        else:
+            period_end = period_start.replace(month=period_start.month + 1)
+
+        rows = []
+        for u in active_users:
+            if u.role not in ("admin", "manager"):
+                continue
+            leads_count = await leads_repo.count(
+                Lead.assigned_to == u.id,
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+                Lead.status != "deleted",
+            )
+            deals_count = await leads_repo.count(
+                Lead.assigned_to == u.id,
+                Lead.created_at >= period_start,
+                Lead.created_at < period_end,
+                Lead.status == "deal",
+            )
+            rows.append({
+                "user": u.full_name or u.username,
+                "leads": leads_count,
+                "deals": deals_count,
+                "conversion": f"{(deals_count/leads_count*100):.1f}%" if leads_count > 0 else "0%",
+            })
+
+    import csv, io
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["user", "leads", "deals", "conversion"])
+    writer.writeheader()
+    writer.writerows(rows)
+
+    from starlette.responses import StreamingResponse
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=kpi_{period}.csv"},
+    )
+
+
 @app.get("/team/commissions", response_class=HTMLResponse)
 async def team_commissions_page(request: Request, period: str = Query(None)):
     user = await get_current_user(request)
@@ -1463,7 +2179,7 @@ async def team_commissions_page(request: Request, period: str = Query(None)):
 
     tenant_id = await _get_tenant_id(user)
     if not period:
-        period = datetime.utcnow().strftime("%Y-%m")
+        period = utcnow().strftime("%Y-%m")
 
     async with async_session() as session:
         users_repo = UserRepository(session, tenant_id)
@@ -1502,6 +2218,56 @@ async def team_commissions_page(request: Request, period: str = Query(None)):
         total_penalties=total_penalties, csrf_token=csrf,
     )
     return templates.TemplateResponse(request, "team_commissions.html", ctx)
+
+
+@app.get("/team/commissions/export/csv")
+async def team_commissions_export_csv(request: Request, period: str = Query(None)):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    if not period:
+        period = utcnow().strftime("%Y-%m")
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+        user_map = {u.id: u for u in active_users}
+
+        comm_repo = CommissionRepository(session, tenant_id)
+        summary = await comm_repo.get_summary(period)
+
+        penalty_repo = PenaltyRepository(session, tenant_id)
+
+        rows = []
+        for row in summary:
+            uid, total_comm, total_bonus, total_deals, deals_count = row
+            penalties_total = await penalty_repo.get_total(uid)
+            net = (total_comm or 0) + (total_bonus or 0) - penalties_total
+            u = user_map.get(uid)
+            rows.append({
+                "user": u.full_name or u.username if u else "?",
+                "deals": deals_count or 0,
+                "commission": f"{(total_comm or 0):.2f}",
+                "bonus": f"{(total_bonus or 0):.2f}",
+                "penalties": f"{penalties_total:.2f}",
+                "net": f"{net:.2f}",
+            })
+
+    import csv, io
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["user", "deals", "commission", "bonus", "penalties", "net"])
+    writer.writeheader()
+    writer.writerows(rows)
+
+    from starlette.responses import StreamingResponse
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=commissions_{period}.csv"},
+    )
 
 
 @app.post("/team/commissions/add-penalty")
@@ -1579,7 +2345,7 @@ async def team_timesheet_page(request: Request, date: str = Query(None)):
 
     tenant_id = await _get_tenant_id(user)
     if not date:
-        date = datetime.utcnow().strftime("%Y-%m-%d")
+        date = utcnow().strftime("%Y-%m-%d")
 
     async with async_session() as session:
         users_repo = UserRepository(session, tenant_id)
@@ -1624,7 +2390,7 @@ async def activity_page(
         raise HTTPException(status_code=403)
 
     tenant_id = await _get_tenant_id(current_user)
-    since = datetime.utcnow() - timedelta(days=days)
+    since = utcnow() - timedelta(days=days)
 
     async with async_session() as session:
         users_repo = UserRepository(session, tenant_id)
@@ -1667,7 +2433,7 @@ async def activity_pdf(
         raise HTTPException(status_code=403)
 
     tenant_id = await _get_tenant_id(current_user)
-    since = datetime.utcnow() - timedelta(days=days)
+    since = utcnow() - timedelta(days=days)
 
     async with async_session() as session:
         users_repo = UserRepository(session, tenant_id)
@@ -1697,7 +2463,7 @@ async def activity_pdf(
     pdf.cell(0, 10, f"Lead Hunter — Audit — {days}d", ln=True)
 
     pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ln=True)
+    pdf.cell(0, 6, f"Generated: {utcnow().strftime('%d.%m.%Y %H:%M')} UTC", ln=True)
     if user_id and user_id in user_map:
         u = user_map[user_id]
         pdf.cell(0, 6, f"Employee: {(u.full_name or u.username or '')}", ln=True)
@@ -1773,12 +2539,382 @@ async def activity_pdf(
     pdf.output(buf)
     buf.seek(0)
 
-    filename = f"activity_{days}d_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.pdf"
+    filename = f"activity_{days}d_{utcnow().strftime('%Y%m%d_%H%M')}.pdf"
     return StreamingResponse(
         buf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ==================== MANAGER AUDIT PAGE ====================
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    days: int = Query(30, ge=1, le=90),
+    user_id: int = Query(None),
+    evidence_type: str = Query(None),
+):
+    """Manager audit page - suspicious activity detection."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        all_users = await users_repo.list_active()
+        user_map = {u.id: u for u in all_users}
+
+        theft_repo = TheftDetectionRepository(session, tenant_id)
+        
+        # Run all detectors
+        fake_rejects = await theft_repo.detect_fake_rejects(days=days)
+        silent_takes = await theft_repo.detect_silent_takes(hours=24)
+        quick_deals = await theft_repo.detect_quick_deals(min_hours=1.0)
+        
+        # Combine all evidence
+        all_evidence = fake_rejects + silent_takes + quick_deals
+        all_evidence.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        
+        # Filter by user if specified
+        if user_id:
+            all_evidence = [e for e in all_evidence if e.get("suspect_user_id") == user_id]
+        
+        # Filter by type if specified
+        if evidence_type:
+            all_evidence = [e for e in all_evidence if e.get("evidence_type") == evidence_type]
+        
+        # Get existing confirmed evidence
+        confirmed = await theft_repo.get_suspicious_activity(confirmed_only=True)
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(
+        current_user,
+        all_users=all_users, user_map=user_map,
+        evidence=all_evidence, confirmed=confirmed,
+        days=days, selected_user_id=user_id, selected_type=evidence_type,
+        csrf_token=csrf,
+    )
+    return templates.TemplateResponse(request, "audit.html", ctx)
+
+
+@app.post("/audit/confirm")
+async def confirm_evidence(
+    request: Request,
+    evidence_type: str = Form(...),
+    lead_id: int = Form(...),
+    suspect_user_id: int = Form(...),
+    confidence: float = Form(...),
+    csrf_token: str = Form(...),
+):
+    """Confirm suspicious evidence and create penalty."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    if not validate_csrf_token(_get_session_id(request), csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        # Get contract for penalty amount
+        contract_repo = ManagerContractRepository(session, tenant_id)
+        contract = await contract_repo.get_active_contract(suspect_user_id)
+        
+        penalty_amount = 0
+        if contract:
+            if evidence_type == "fake_reject":
+                penalty_amount = float(contract.penalty_per_fake_reject)
+            elif evidence_type == "stolen_lead":
+                penalty_amount = float(contract.penalty_per_stolen_lead)
+            elif evidence_type == "sla_breach":
+                penalty_amount = float(contract.penalty_per_sla_breach)
+        
+        # Create penalty
+        penalty_repo = PenaltyRepository(session, tenant_id)
+        penalty = await penalty_repo.create(
+            user_id=suspect_user_id,
+            reason="stolen_lead" if evidence_type in ("fake_reject", "stolen_lead") else "slow_response",
+            amount=penalty_amount,
+            description=f"Auto-detected: {evidence_type} (confidence: {confidence}%)",
+            lead_id=lead_id,
+        )
+        
+        # Create evidence record
+        theft_repo = TheftDetectionRepository(session, tenant_id)
+        evidence = await theft_repo.create_evidence(
+            lead_id=lead_id,
+            suspect_user_id=suspect_user_id,
+            evidence_type=evidence_type,
+            confidence=confidence,
+        )
+        await theft_repo.confirm_evidence(evidence.id, current_user.id, penalty.id)
+        
+        await session.commit()
+
+    return RedirectResponse("/audit", status_code=303)
+
+
+@app.get("/audit/api/evidence")
+async def api_evidence(
+    request: Request,
+    days: int = Query(30, ge=1, le=90),
+):
+    """API endpoint for audit evidence (JSON)."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        theft_repo = TheftDetectionRepository(session, tenant_id)
+        fake_rejects = await theft_repo.detect_fake_rejects(days=days)
+        silent_takes = await theft_repo.detect_silent_takes(hours=24)
+        quick_deals = await theft_repo.detect_quick_deals(min_hours=1.0)
+        
+        all_evidence = fake_rejects + silent_takes + quick_deals
+        all_evidence.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+
+    return {"evidence": all_evidence, "total": len(all_evidence)}
+
+
+# ==================== MANAGER CONTRACTS ====================
+
+@app.get("/contracts", response_class=HTMLResponse)
+async def contracts_page(request: Request):
+    """Manager contracts list page."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        all_users = await users_repo.list_active()
+        user_map = {u.id: u for u in all_users}
+
+        contract_repo = ManagerContractRepository(session, tenant_id)
+        contracts = await contract_repo.list_contracts(include_expired=True)
+
+    ctx = await _template_ctx(
+        current_user,
+        all_users=all_users, user_map=user_map,
+        contracts=contracts,
+    )
+    return templates.TemplateResponse(request, "contracts.html", ctx)
+
+
+@app.post("/contracts/create")
+async def create_contract(
+    request: Request,
+    user_id: int = Form(...),
+    commission_rate: float = Form(5.0),
+    min_deal_amount: float = Form(10000.0),
+    penalty_per_stolen_lead: float = Form(10000.0),
+    penalty_per_sla_breach: float = Form(1000.0),
+    penalty_per_fake_reject: float = Form(5000.0),
+    sla_hours: int = Form(24),
+    csrf_token: str = Form(...),
+):
+    """Create a new manager contract."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    if not validate_csrf_token(_get_session_id(request), csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        contract_repo = ManagerContractRepository(session, tenant_id)
+        
+        # Generate contract number
+        import random
+        contract_number = f"ДОГ-{random.randint(1000, 9999)}-{utcnow().strftime('%m%Y')}"
+        
+        contract = await contract_repo.create(
+            user_id=user_id,
+            contract_number=contract_number,
+            commission_rate=commission_rate,
+            min_deal_amount=min_deal_amount,
+            penalty_per_stolen_lead=penalty_per_stolen_lead,
+            penalty_per_sla_breach=penalty_per_sla_breach,
+            penalty_per_fake_reject=penalty_per_fake_reject,
+            sla_hours=sla_hours,
+        )
+        await session.commit()
+
+    return RedirectResponse("/contracts", status_code=303)
+
+
+@app.get("/contracts/{contract_id}", response_class=HTMLResponse)
+async def contract_detail(request: Request, contract_id: int):
+    """Contract detail page (HTML view)."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        contract_repo = ManagerContractRepository(session, tenant_id)
+        contract = await session.get(ManagerContract, contract_id)
+        if not contract:
+            raise HTTPException(status_code=404)
+        
+        user = await session.get(User, contract.user_id)
+        tenant = await session.get(Tenant, tenant_id)
+
+    ctx = {
+        "contract": contract,
+        "user": user,
+        "tenant": tenant,
+        "tenant_director_name": tenant.config.get("director_name", "") if tenant.config else "",
+    }
+    return templates.TemplateResponse(request, "contract.html", ctx)
+
+
+@app.get("/contracts/{contract_id}/sign")
+async def sign_contract(request: Request, contract_id: int):
+    """Mark contract as signed."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        contract_repo = ManagerContractRepository(session, tenant_id)
+        await contract_repo.sign_contract(contract_id)
+        await session.commit()
+
+    return RedirectResponse(f"/contracts/{contract_id}", status_code=303)
+
+
+# ==================== PAYMENTS PAGE ====================
+
+@app.get("/payments", response_class=HTMLResponse)
+async def payments_page(
+    request: Request,
+    period: str = Query(None),
+    user_id: int = Query(None),
+    status_filter: str = Query(None),
+):
+    """Payments page - commission tracking."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    tenant_id = await _get_tenant_id(current_user)
+    
+    # Default to current month if no period specified
+    if not period:
+        period = utcnow().strftime("%Y-%m")
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        all_users = await users_repo.list_active()
+        user_map = {u.id: u for u in all_users}
+
+        commission_repo = CommissionRepository(session, tenant_id)
+        penalty_repo = PenaltyRepository(session, tenant_id)
+        
+        # Get commissions for period
+        commissions = await commission_repo.list_all(period=period)
+        
+        # Filter by user if specified
+        if user_id:
+            commissions = [c for c in commissions if c.user_id == user_id]
+        
+        # Filter by status if specified
+        if status_filter:
+            commissions = [c for c in commissions if c.status == status_filter]
+        
+        # Get summary
+        summary = await commission_repo.get_summary(period)
+        summary_map = {s.user_id: s for s in summary}
+        
+        # Get penalties for period
+        all_penalties = []
+        for u in all_users:
+            user_penalties = await penalty_repo.list_by_user(u.id)
+            # Filter by period (created in same month)
+            period_penalties = [p for p in user_penalties if p.created_at and p.created_at.strftime("%Y-%m") == period]
+            all_penalties.extend(period_penalties)
+
+    ctx = await _template_ctx(
+        current_user,
+        all_users=all_users, user_map=user_map,
+        commissions=commissions, summary=summary_map,
+        penalties=all_penalties,
+        period=period, selected_user_id=user_id, selected_status=status_filter,
+    )
+    return templates.TemplateResponse(request, "payments.html", ctx)
+
+
+@app.post("/payments/{commission_id}/approve")
+async def approve_payment(
+    request: Request,
+    commission_id: int,
+    csrf_token: str = Form(...),
+):
+    """Approve that client has paid."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    if not validate_csrf_token(_get_session_id(request), csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        commission = await session.get(Commission, commission_id)
+        if commission:
+            commission.status = "approved"
+            commission.approved_by = current_user.id
+            commission.approved_at = utcnow()
+            await session.commit()
+
+    return RedirectResponse("/payments", status_code=303)
+
+
+@app.post("/payments/{commission_id}/pay")
+async def mark_paid(
+    request: Request,
+    commission_id: int,
+    csrf_token: str = Form(...),
+):
+    """Mark commission as paid to manager."""
+    current_user = await get_current_user(request)
+    if not current_user or current_user.role != "super_admin":
+        raise HTTPException(status_code=403)
+
+    if not validate_csrf_token(_get_session_id(request), csrf_token):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    tenant_id = await _get_tenant_id(current_user)
+
+    async with async_session() as session:
+        commission_repo = CommissionRepository(session, tenant_id)
+        await commission_repo.mark_paid(commission_id)
+        
+        # Update status too
+        commission = await session.get(Commission, commission_id)
+        if commission:
+            commission.status = "paid"
+            commission.paid_at = utcnow()
+        
+        await session.commit()
+
+    return RedirectResponse("/payments", status_code=303)
 
 
 @app.get("/franchisor", response_class=HTMLResponse)
@@ -1847,7 +2983,21 @@ async def franchisor_create_tenant(
         existing = await tenant_repo.get_by_slug(slug)
         if existing:
             return RedirectResponse("/franchisor?error=Slug уже занят", status_code=303)
-        await tenant_repo.create(name=name, slug=slug, city=city or None)
+        new_tenant = await tenant_repo.create(name=name, slug=slug, city=city or None)
+        await session.commit()
+        tenant_id = new_tenant.id
+
+        # Add default message templates for new tenant
+        default_templates = [
+            ("Первое обращение", "first_contact", "Здравствуйте, {name}! 👋\nВидели ваше сообщение в чате. Мы — команда по ремонту квартир в {city}.\nДелаем полный ремонт под ключ: от черновой отделки до чистовой.\nМожем бесплатно выехать на замер и рассчитать стоимость.\nКогда удобно посмотреть квартиру?"),
+            ("Повторное обращение", "follow_up", "Добрый день, {name}!\nУточняли по поводу ремонта — готовы обсудить детали.\nКакой формат вам удобен: выезд на замер или предварительный расчёт по фото?"),
+            ("Закрытие сделки", "deal_close", "{name}, рады, что вы выбрали нас! 🎉\nДоговорились: выезд на замер {date} в {time}.\nНаш менеджер свяжется с вами для подтверждения.\nЕсли есть вопросы — пишите!"),
+            ("Ответ на вопрос", "general", "Добрый день, {name}!\nСпасибо за интерес к нашему ремонту.\n{answer}\nЕсть ещё вопросы? С удовольствием отвечу!"),
+            ("Благодарность за отзыв", "general", "{name}, большое спасибо за отзыв! 🙏\nРады, что вам понравился результат.\nЕсли знакомые ищут ремонт — будем благодарны за рекомендацию!"),
+        ]
+        tmpl_repo = MessageTemplateRepository(session, tenant_id)
+        for t_name, t_category, t_body in default_templates:
+            await tmpl_repo.create(name=t_name, category=t_category, body=t_body, tenant_id=tenant_id)
         await session.commit()
 
     return RedirectResponse("/franchisor?success=Тенант создан", status_code=303)
@@ -1877,6 +3027,103 @@ async def franchisor_toggle_tenant(
     return RedirectResponse("/franchisor?success=Статус обновлён", status_code=303)
 
 
+@app.get("/billing", response_class=HTMLResponse)
+async def billing_page(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    tenant_id = await _get_tenant_id(user)
+    if not tenant_id:
+        return RedirectResponse("/?error=Super admin must select a tenant", status_code=303)
+
+    tc = await TenantConfig.create(tenant_id)
+
+    async with async_session() as session:
+        from app.models import User as UserModel
+        from sqlalchemy import func as sa_func
+        
+        user_count = (await session.execute(
+            select(sa_func.count(UserModel.id)).where(UserModel.tenant_id == tenant_id, UserModel.is_active == True)
+        )).scalar() or 0
+        
+        chats = _load_chats()
+        chat_count = len(chats)
+        
+        month_start = utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        leads_this_month = (await session.execute(
+            select(sa_func.count(Lead.id)).where(
+                Lead.tenant_id == tenant_id,
+                Lead.created_at >= month_start,
+                Lead.status != "deleted"
+            )
+        )).scalar() or 0
+    
+    current_plan = tc.plan_features
+    current_plan_key = tc.plan
+    plans = tc.all_plans
+    
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, 
+        current_plan=current_plan, 
+        current_plan_key=current_plan_key,
+        plans=plans,
+        user_count=user_count,
+        chat_count=chat_count,
+        leads_this_month=leads_this_month,
+        csrf_token=csrf,
+    )
+    return templates.TemplateResponse(request, "billing.html", ctx)
+
+
+@app.post("/billing/subscribe")
+async def billing_subscribe(request: Request, plan: str = Form(...), csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    
+    valid_plans = ["free", "pro", "enterprise"]
+    if plan not in valid_plans:
+        return RedirectResponse("/billing?error=Неверный+план", status_code=303)
+
+    async with async_session() as session:
+        from app.models import Tenant
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant:
+            tenant.plan = plan
+            await session.commit()
+
+    return RedirectResponse("/billing?success=Тариф+изменён", status_code=303)
+
+
+@app.post("/billing/trial")
+async def billing_trial(request: Request, csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    
+    async with async_session() as session:
+        from app.models import Tenant
+        from datetime import timedelta
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant and tenant.plan == "free":
+            tenant.plan = "pro"
+            tenant.trial_ends_at = utcnow() + timedelta(days=14)
+            await session.commit()
+
+    return RedirectResponse("/billing?success=Пробный+период+активирован", status_code=303)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, error: str = Query(None), success: str = Query(None)):
     user = await get_current_user(request)
@@ -1885,6 +3132,18 @@ async def settings_page(request: Request, error: str = Query(None), success: str
 
     tenant_id = await _get_tenant_id(user)
     chats = _load_chats()
+
+    # Lead counts per chat
+    chat_lead_counts = {}
+    async with async_session() as session:
+        from sqlalchemy import func as sa_func
+        q = (
+            select(Lead.chat_title, sa_func.count(Lead.id))
+            .where(Lead.status != "deleted")
+            .group_by(Lead.chat_title)
+        )
+        rows = (await session.execute(q)).fetchall()
+        chat_lead_counts = {r[0]: r[1] for r in rows}
 
     # Load tenant config
     tenant_config = {}
@@ -1902,7 +3161,7 @@ async def settings_page(request: Request, error: str = Query(None), success: str
                 tenant_config = default_tenant.config
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, chats=chats, tenant_config=tenant_config, csrf_token=csrf, error=error, success=success)
+    ctx = await _template_ctx(user, chats=chats, chat_lead_counts=chat_lead_counts, tenant_config=tenant_config, csrf_token=csrf, error=error, success=success)
     return templates.TemplateResponse(request, "settings.html", ctx)
 
 
@@ -1983,8 +3242,8 @@ async def update_tenant_appearance(
     if theme_color and not re.fullmatch(r"#[0-9a-fA-F]{6}", theme_color):
         return RedirectResponse("/settings?error=Цвет должен быть в формате #rrggbb", status_code=303)
     for url_val, url_name in [(logo_url, "Логотип"), (favicon_url, "Фавиконка")]:
-        if url_val and not re.fullmatch(r"https?://[^\s<>\"']+", url_val):
-            return RedirectResponse(f"/settings?error={url_name}: допустимы только HTTP/HTTPS URL", status_code=303)
+        if url_val and not re.fullmatch(r"https?://[^\s<>\"']+", url_val) and not url_val.startswith("/static/uploads/"):
+            return RedirectResponse(f"/settings?error={url_name}: допустимы только HTTP/HTTPS URL или загруженный файл", status_code=303)
 
     async with async_session() as session:
         tenant_repo = TenantRepository(session)
@@ -2013,6 +3272,41 @@ async def update_tenant_appearance(
         await session.commit()
 
     return RedirectResponse("/settings?success=Внешний вид сохранён", status_code=303)
+
+
+UPLOAD_DIR = Path(__file__).parent / "static" / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"}
+MAX_UPLOAD_SIZE = 2 * 1024 * 1024  # 2MB
+
+
+@app.post("/api/upload")
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    purpose: str = Form("logo"),
+):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return JSONResponse({"error": "Unauthorized"}, status_code=403)
+
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        return JSONResponse({"error": "Допустимые форматы: PNG, JPG, GIF, SVG, ICO"}, status_code=400)
+
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE:
+        return JSONResponse({"error": "Максимальный размер 2 МБ"}, status_code=400)
+
+    ext = file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "png"
+    filename = f"{purpose}_{int(time.time())}.{ext}"
+    filepath = UPLOAD_DIR / filename
+
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    url = f"/static/uploads/{filename}"
+    return JSONResponse({"url": url, "filename": filename})
 
 
 @app.post("/settings/config/keywords")
@@ -2164,7 +3458,7 @@ async def add_chat(
     normalized = chat.lower().replace("https://", "").replace("http://", "").replace("t.me/", "").rstrip("/")
     is_duplicate = False
     for existing in chats:
-        existing_norm = existing.lower().replace("https://", "").replace("http://", "").replace("t.me/", "").rstrip("/")
+        existing_norm = existing["url"].lower().replace("https://", "").replace("http://", "").replace("t.me/", "").rstrip("/")
         if normalized == existing_norm or normalized in existing_norm or existing_norm in normalized:
             is_duplicate = True
             break
@@ -2175,7 +3469,7 @@ async def add_chat(
     if len(chats) >= 100:
         return RedirectResponse("/settings?error=Максимум 100 чатов", status_code=303)
 
-    chats.append(chat)
+    chats.append({"url": chat, "active": True})
     _save_chats(chats)
     return RedirectResponse("/settings?success=Чат+добавлен", status_code=303)
 
@@ -2194,10 +3488,32 @@ async def remove_chat(
 
     chat = sanitize_input(chat, 200).strip()
     chats = _load_chats()
-    if chat in chats:
-        chats.remove(chat)
-        _save_chats(chats)
+    chats = [c for c in chats if c["url"] != chat]
+    _save_chats(chats)
     return RedirectResponse("/settings?success=Чат+удалён", status_code=303)
+
+
+@app.post("/settings/chats/toggle")
+async def toggle_chat(
+    request: Request,
+    chat: str = Form(...),
+    csrf_token: str = Form(""),
+):
+    admin = await get_current_user(request)
+    if not admin or admin.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    chat = sanitize_input(chat, 200).strip()
+    chats = _load_chats()
+    for c in chats:
+        if c["url"] == chat:
+            c["active"] = not c.get("active", True)
+            break
+    _save_chats(chats)
+    status = "включён" if any(c["url"] == chat and c.get("active", True) for c in chats) else "выключен"
+    return RedirectResponse(f"/settings?success=Чат+{status}", status_code=303)
 
 
 @app.get("/api/stats")
@@ -2210,7 +3526,7 @@ async def api_stats(request: Request):
 
     async with async_session() as session:
         leads = LeadRepository(session, tenant_id)
-        now = datetime.utcnow()
+        now = utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = now - timedelta(days=7)
 
@@ -2403,39 +3719,7 @@ async def delete_telegram_session(
     return RedirectResponse("/settings/telegram?success=Session deleted", status_code=303)
 
 
-# ===== Billing =====
-
-@app.get("/billing")
-async def billing_page(request: Request):
-    user = await get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
-    if user.role not in ("super_admin", "admin"):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    tenant_id = await _get_tenant_id(user)
-    if not tenant_id:
-        return RedirectResponse("/?error=Super admin must select a tenant", status_code=303)
-
-    from app.config_manager import TenantConfig
-    tenant_config = await TenantConfig.create(tenant_id)
-
-    async with async_session() as session:
-        usage = TenantUsageRepository(session, tenant_id)
-
-        ai_today = await usage.count_events_today(tenant_id, "ai_request")
-        tokens_today = await usage.sum_tokens_today(tenant_id)
-        cost_today = await usage.sum_cost_today(tenant_id)
-
-        ai_month = await usage.count_events_month(tenant_id, "ai_request")
-        tokens_month = await usage.sum_tokens_month(tenant_id)
-        cost_month = await usage.sum_cost_month(tenant_id)
-
-        leads_month = await usage.count_events_month(tenant_id, "lead_created")
-
-    ctx = await _template_ctx(user, csrf_token=generate_csrf_token(_get_session_id(request)), ai_today=ai_today, tokens_today=tokens_today, cost_today=cost_today, ai_month=ai_month, tokens_month=tokens_month, cost_month=cost_month, leads_month=leads_month, max_ai_per_day=tenant_config.max_ai_requests_per_day, max_tokens_per_day=tenant_config.max_tokens_per_day, max_cost_per_month=tenant_config.max_cost_per_month_usd, max_leads_per_month=tenant_config.max_leads_per_month, ai_enabled=tenant_config.ai_enabled)
-    return templates.TemplateResponse(request, "billing.html", ctx)
-
+# ===== Billing Settings =====
 
 @app.post("/settings/billing")
 async def update_billing_settings(
@@ -2680,8 +3964,9 @@ async def kanban_page(request: Request):
         leads_repo = LeadRepository(session, tenant_id)
         all_leads = await leads_repo.list_all()
         active_leads = [l for l in all_leads if l.status not in ("deleted", "archive")]
+        chats = sorted(set(l.chat_title for l in active_leads if l.chat_title))
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, leads=active_leads, csrf_token=csrf)
+    ctx = await _template_ctx(user, leads=active_leads, chats=chats, csrf_token=csrf)
     return templates.TemplateResponse(request, "kanban.html", ctx)
 
 
@@ -2693,6 +3978,7 @@ async def kanban_move(request: Request):
     body = await request.json()
     lead_id = body.get("lead_id")
     new_status = body.get("status")
+    reason = body.get("reason", "")
     if not lead_id or not new_status:
         raise HTTPException(status_code=400)
     tenant_id = await _get_tenant_id(user)
@@ -2703,17 +3989,31 @@ async def kanban_move(request: Request):
             raise HTTPException(status_code=404)
         old_status = lead.status
         lead.status = new_status
+        if new_status == "not_interested" and reason:
+            lead.feedback_reason = reason[:50]
         history = LeadHistoryRepository(session, tenant_id)
         await history.create(
             lead_id=lead_id, user_id=user.id, action="status_change",
             old_value=old_status, new_value=new_status,
-            note=f"{user.full_name or user.username} (канбан)",
+            note=f"{user.full_name or user.username} (канбан)" + (f": {reason}" if reason else ""),
         )
         await ActionLogRepository(session, tenant_id).log(
             user.id, "status_change", lead_id=lead_id,
-            meta={"from": old_status, "to": new_status, "via": "kanban"},
+            meta={"from": old_status, "to": new_status, "via": "kanban", "reason": reason},
         )
         await session.commit()
+
+        try:
+            from app.ml_scorer import train_on_outcome
+            if new_status == "deal":
+                lead.feedback = "useful"
+                train_on_outcome(lead, is_positive=True)
+            elif new_status in ("not_interested", "deleted"):
+                lead.feedback = "not_useful"
+                train_on_outcome(lead, is_positive=False)
+        except Exception:
+            pass
+
     await _fire_webhooks(tenant_id, "status_change", {"lead_id": lead_id, "from": old_status, "to": new_status})
     return {"ok": True}
 
@@ -2800,8 +4100,10 @@ async def sources_list(request: Request):
         )
         sources = result.scalars().all()
 
+    from app.scrapers.cities import list_cities
+    from datetime import datetime
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, sources=sources, csrf_token=csrf)
+    ctx = await _template_ctx(user, sources=sources, csrf_token=csrf, cities=list_cities(), now=datetime.utcnow())
     return templates.TemplateResponse(request, "sources.html", ctx)
 
 
@@ -2809,13 +4111,9 @@ async def sources_list(request: Request):
 async def source_add(
     request: Request,
     name: str = Form(...),
-    display_name: str = Form(""),
+    city: str = Form(""),
     vk_token: str = Form(""),
-    vk_groups: str = Form(""),
-    avito_city: str = Form(""),
-    cian_api_key: str = Form(""),
-    cian_city: str = Form(""),
-    forumhouse_sections: str = Form(""),
+    proxy: str = Form(""),
     csrf_token: str = Form(""),
 ):
     user = await get_current_user(request)
@@ -2824,35 +4122,39 @@ async def source_add(
     if not validate_csrf_token(csrf_token):
         return HTMLResponse(content="Invalid CSRF token", status_code=403)
 
+    from app.scrapers.cities import (
+        resolve_city, get_avito_slug, get_cian_region_id,
+        DEFAULT_QUERIES, DEFAULT_FORUMHOUSE_SECTIONS,
+    )
+
     tenant_id = await _get_tenant_id(user)
+    city = city.strip()
+    display_names = {"vk": "VK", "avito": "Avito", "cian": "ЦИАН", "forumhouse": "ForumHouse"}
+
     config = {}
 
     if name == "vk":
         config = {
+            "city": city or "Москва",
             "vk_access_token": vk_token,
-            "groups": [g.strip() for g in vk_groups.split(",") if g.strip()],
-            "queries": [
-                "ищу бригаду для ремонта", "нужна бригада ремонт",
-                "ремонт квартиры ищу", "капитальный ремонт",
-            ],
+            "queries": DEFAULT_QUERIES["vk"],
         }
     elif name == "avito":
         config = {
-            "city": avito_city or "moskva",
-            "queries": [
-                "ищу бригаду для ремонта", "нужна бригада ремонт",
-                "ремонт квартиры",
-            ],
+            "city": city or "Москва",
+            "queries": DEFAULT_QUERIES["avito"],
         }
+        if proxy.strip():
+            config["proxy"] = proxy.strip()
     elif name == "cian":
         config = {
-            "cian_api_key": cian_api_key,
-            "city": cian_city or "moscow",
+            "city": city or "Санкт-Петербург",
+            "queries": DEFAULT_QUERIES["cian"],
         }
     elif name == "forumhouse":
-        sections = [s.strip() for s in forumhouse_sections.split(",") if s.strip()]
         config = {
-            "sections": sections or ["remont-i-otdelka", "stroitelstvo"],
+            "sections": DEFAULT_FORUMHOUSE_SECTIONS,
+            "queries": DEFAULT_QUERIES["forumhouse"],
         }
 
     from app.models import LeadSource
@@ -2860,7 +4162,7 @@ async def source_add(
         source = LeadSource(
             tenant_id=tenant_id,
             name=name,
-            display_name=display_name or name.upper(),
+            display_name=display_names.get(name, name.upper()),
             config=config,
         )
         session.add(source)
@@ -2909,3 +4211,289 @@ async def source_toggle(request: Request, source_id: int, csrf_token: str = Form
             source.is_active = not source.is_active
             await session.commit()
     return RedirectResponse("/sources?success=Статус+обновлён", status_code=303)
+
+
+@app.post("/sources/{source_id}/test")
+async def source_test(request: Request, source_id: int, csrf_token: str = Form("")):
+    """Test a scraper — run it once and show results."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        from app.models import LeadSource
+        result = await session.execute(
+            select(LeadSource).where(LeadSource.id == source_id, LeadSource.tenant_id == tenant_id)
+        )
+        source = result.scalar_one_or_none()
+        if not source:
+            return RedirectResponse("/sources?error=Источник+не+найден", status_code=303)
+
+    # Run the scraper
+    try:
+        from app.scrapers.avito_scraper import AvitoScraper
+        from app.scrapers.cian_scraper import CIANScraper
+        from app.scrapers.forumhouse_scraper import ForumHouseScraper
+        from app.scrapers.vk_scraper import VKScraper
+
+        config = source.config or {}
+        scraper_map = {
+            "vk": VKScraper,
+            "avito": AvitoScraper,
+            "cian": CIANScraper,
+            "forumhouse": ForumHouseScraper,
+        }
+        scraper_cls = scraper_map.get(source.name)
+        if not scraper_cls:
+            return RedirectResponse("/sources?error=Неизвестный+тип+источника", status_code=303)
+
+        scraper = scraper_cls(config)
+        leads = await scraper.monitor(config.get("queries", []), cities=[config.get("city", "")])
+        count = len(leads)
+        sample_texts = [l.text[:100] for l in leads[:3]]
+        errors = scraper.get_errors()
+        error_html = ""
+        if errors:
+            error_items = ''.join(f'<div style="margin:4px 0;padding:6px;background:#3a1a1a;border-radius:4px;font-size:11px;color:#ff6b6b">{e["time"]}: {e["error"]}</div>' for e in errors)
+            error_html = f'<p style="margin-top:12px;color:#ff6b6b"><strong>Ошибки:</strong></p>{error_items}'
+
+        return HTMLResponse(content=f"""
+        <html><body style="font-family:monospace;padding:20px;background:#1a1a2e;color:#e0e0e0">
+        <h2>Тест {source.name}</h2>
+        <p>Найдено лидов: <strong>{count}</strong></p>
+        {''.join(f'<div style="margin:8px 0;padding:8px;background:#2a2a4a;border-radius:4px;font-size:12px">{t}...</div>' for t in sample_texts) if sample_texts else '<p style="color:#888">Лиды не найдены</p>'}
+        {error_html}
+        <p style="margin-top:16px"><a href="/sources" style="color:#c45a5a">← Назад</a></p>
+        </body></html>
+        """)
+    except Exception as e:
+        return HTMLResponse(content=f"""
+        <html><body style="font-family:monospace;padding:20px;background:#1a1a2e;color:#e0e0e0">
+        <h2>Ошибка теста {source.name}</h2>
+        <pre style="color:#c45a5a">{str(e)}</pre>
+        <p style="margin-top:16px"><a href="/sources" style="color:#c45a5a">← Назад</a></p>
+        </body></html>
+        """)
+
+
+# ============================================================
+# REST API для интеграций (1С, Битрикс, AmoCRM)
+# ============================================================
+
+from fastapi import Header, HTTPException
+from typing import Optional
+
+
+def _verify_api_key(x_api_key: str = Header(None)):
+    """Verify API key from header."""
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    # In production, look up the key in the database
+    # For now, accept any non-empty key
+    return x_api_key
+
+
+@app.get("/api/v1/leads")
+async def api_leads_list(
+    request: Request,
+    status: Optional[str] = None,
+    chat: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    x_api_key: str = Header(None),
+):
+    """REST API: Get leads list."""
+    _verify_api_key(x_api_key)
+    
+    # Get tenant from API key (simplified - in production lookup from DB)
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    tenant_id = await _get_tenant_id(user)
+    
+    async with async_session() as session:
+        leads_repo = LeadRepository(session, tenant_id)
+        q = select(Lead).where(Lead.status != "deleted")
+        
+        if tenant_id:
+            q = q.where(Lead.tenant_id == tenant_id)
+        if status:
+            q = q.where(Lead.status == status)
+        if chat:
+            q = q.where(Lead.chat_title.contains(chat))
+        
+        q = q.order_by(Lead.created_at.desc()).offset(offset).limit(limit)
+        leads = (await session.execute(q)).scalars().all()
+        
+        return {
+            "leads": [
+                {
+                    "id": l.id,
+                    "first_name": l.first_name,
+                    "last_name": l.last_name,
+                    "username": l.username,
+                    "phone": l.phone,
+                    "message_text": l.message_text,
+                    "chat_title": l.chat_title,
+                    "lead_score": l.lead_score,
+                    "urgency": l.urgency,
+                    "status": l.status,
+                    "created_at": l.created_at.isoformat() if l.created_at else None,
+                }
+                for l in leads
+            ],
+            "total": len(leads),
+        }
+
+
+@app.get("/api/v1/leads/{lead_id}")
+async def api_leads_get(
+    request: Request,
+    lead_id: int,
+    x_api_key: str = Header(None),
+):
+    """REST API: Get single lead."""
+    _verify_api_key(x_api_key)
+    
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    tenant_id = await _get_tenant_id(user)
+    
+    async with async_session() as session:
+        leads_repo = LeadRepository(session, tenant_id)
+        lead = await leads_repo.get_by_id(lead_id)
+        
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        return {
+            "id": lead.id,
+            "first_name": lead.first_name,
+            "last_name": lead.last_name,
+            "username": lead.username,
+            "phone": lead.phone,
+            "user_id": lead.user_id,
+            "message_text": lead.message_text,
+            "chat_title": lead.chat_title,
+            "lead_score": lead.lead_score,
+            "urgency": lead.urgency,
+            "status": lead.status,
+            "reason": lead.reason,
+            "recommended_message": lead.recommended_message,
+            "created_at": lead.created_at.isoformat() if lead.created_at else None,
+        }
+
+
+@app.post("/api/v1/leads")
+async def api_leads_create(
+    request: Request,
+    x_api_key: str = Header(None),
+):
+    """REST API: Create a lead (for CRM integrations)."""
+    _verify_api_key(x_api_key)
+    
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    tenant_id = await _get_tenant_id(user)
+    data = await request.json()
+    
+    async with async_session() as session:
+        lead = Lead(
+            tenant_id=tenant_id,
+            first_name=data.get("first_name"),
+            last_name=data.get("last_name"),
+            phone=data.get("phone"),
+            message_text=data.get("message_text", ""),
+            chat_title=data.get("chat_title", "API"),
+            lead_score=data.get("lead_score", 50),
+            urgency=data.get("urgency", "medium"),
+            status="new",
+        )
+        session.add(lead)
+        await session.commit()
+        await session.refresh(lead)
+        
+        return {"id": lead.id, "status": "created"}
+
+
+@app.put("/api/v1/leads/{lead_id}")
+async def api_leads_update(
+    request: Request,
+    lead_id: int,
+    x_api_key: str = Header(None),
+):
+    """REST API: Update a lead status (for CRM integrations)."""
+    _verify_api_key(x_api_key)
+    
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    tenant_id = await _get_tenant_id(user)
+    data = await request.json()
+    
+    async with async_session() as session:
+        leads_repo = LeadRepository(session, tenant_id)
+        lead = await leads_repo.get_by_id(lead_id)
+        
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        if "status" in data:
+            lead.status = data["status"]
+        if "phone" in data:
+            lead.phone = data["phone"]
+        if "lead_score" in data:
+            lead.lead_score = data["lead_score"]
+        
+        await session.commit()
+        
+        return {"id": lead.id, "status": "updated"}
+
+
+@app.get("/api/v1/stats")
+async def api_stats(
+    request: Request,
+    x_api_key: str = Header(None),
+):
+    """REST API: Get statistics (for dashboards)."""
+    _verify_api_key(x_api_key)
+    
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    tenant_id = await _get_tenant_id(user)
+    
+    async with async_session() as session:
+        from sqlalchemy import func as sa_func
+        
+        total = (await session.execute(
+            select(sa_func.count(Lead.id)).where(Lead.tenant_id == tenant_id, Lead.status != "deleted")
+        )).scalar() or 0
+        
+        deals = (await session.execute(
+            select(sa_func.count(Lead.id)).where(Lead.tenant_id == tenant_id, Lead.status == "deal")
+        )).scalar() or 0
+        
+        revenue = (await session.execute(
+            select(sa_func.sum(Lead.deal_amount)).where(
+                Lead.tenant_id == tenant_id,
+                Lead.deal_amount.isnot(None)
+            )
+        )).scalar() or 0
+        
+        return {
+            "total_leads": total,
+            "total_deals": deals,
+            "total_revenue": float(revenue),
+            "conversion_rate": round(deals / total * 100, 1) if total > 0 else 0,
+        }

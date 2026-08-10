@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Выплаты — Lead Hunter{% endblock %}
+{% block content %}
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Выплаты</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Комиссии, штрафы и расчёты с менеджерами</p>
+
+<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Период</label>
+            <select onchange="window.location.href='/payments?period='+this.value+'{% if selected_user_id %}&user_id={{ selected_user_id }}{% endif %}{% if selected_status %}&status_filter={{ selected_status }}{% endif %}'" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                {% for p in ['2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12'] %}
+                <option value="{{ p }}" {% if period == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Менеджер</label>
+            <select onchange="var v=this.value;window.location.href='/payments?period={{ period }}'+(v?'&user_id='+v:''){% if selected_status %}&status_filter={{ selected_status }}{% endif %}" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="">Все менеджеры</option>
+                {% for u in all_users %}
+                <option value="{{ u.id }}" {% if selected_user_id == u.id %}selected{% endif %}>{{ u.full_name or u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Статус</label>
+            <select onchange="var v=this.value;window.location.href='/payments?period={{ period }}{% if selected_user_id %}&user_id={{ selected_user_id }}{% endif %}'+(v?'&status_filter='+v:'')" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="">Все статусы</option>
+                <option value="pending" {% if selected_status == 'pending' %}selected{% endif %}>Ожидает оплаты</option>
+                <option value="approved" {% if selected_status == 'approved' %}selected{% endif %}>Оплата получена</option>
+                <option value="paid" {% if selected_status == 'paid' %}selected{% endif %}>Выплачено</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:16px;margin-bottom:16px">
+    {% set total_commission = [] %}
+    {% set total_paid = [] %}
+    {% set total_pending = [] %}
+    {% for s in summary.values() %}
+        {% if total_commission.append(s.total_commission|float) %}{% endif %}
+    {% endfor %}
+    
+    <div class="card" style="border-left:4px solid var(--primary)">
+        <div style="font-size:13px;color:var(--text-secondary)">Всего комиссий</div>
+        <div style="font-size:24px;font-weight:600">{{ summary.values()|list|length }}</div>
+    </div>
+    <div class="card" style="border-left:4px solid #16a34a">
+        <div style="font-size:13px;color:var(--text-secondary)">К выплате</div>
+        <div style="font-size:24px;font-weight:600;color:#16a34a">
+            {% set total = namespace(sum=0) %}
+            {% for c in commissions if c.status != 'paid' %}
+                {% set total.sum = total.sum + c.commission_amount|float %}
+            {% endfor %}
+            {{ "{:,.0f}".format(total.sum) }} ₽
+        </div>
+    </div>
+    <div class="card" style="border-left:4px solid #d97706">
+        <div style="font-size:13px;color:var(--text-secondary)">Ожидает оплаты клиента</div>
+        <div style="font-size:24px;font-weight:600;color:#d97706">
+            {% set pending = namespace(sum=0) %}
+            {% for c in commissions if c.status == 'pending' %}
+                {% set pending.sum = pending.sum + c.commission_amount|float %}
+            {% endfor %}
+            {{ "{:,.0f}".format(pending.sum) }} ₽
+        </div>
+    </div>
+    <div class="card" style="border-left:4px solid #dc2626">
+        <div style="font-size:13px;color:var(--text-secondary)">Штрафы</div>
+        <div style="font-size:24px;font-weight:600;color:#dc2626">
+            {% set penalty_total = namespace(sum=0) %}
+            {% for p in penalties %}
+                {% set penalty_total.sum = penalty_total.sum + p.amount|float %}
+            {% endfor %}
+            {{ "{:,.0f}".format(penalty_total.sum) }} ₽
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Комиссии ({{ commissions|length }})</h3>
+    
+    {% if commissions %}
+    <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Менеджер</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Лид</th>
+                    <th style="text-align:right;padding:8px 10px;font-weight:600">Сумма сделки</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Ставка</th>
+                    <th style="text-align:right;padding:8px 10px;font-weight:600">Комиссия</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Статус</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in commissions %}
+                {% set user = user_map.get(c.user_id) %}
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 10px">
+                        {% if user %}{{ user.full_name or user.username }}{% else %}ID: {{ c.user_id }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px">
+                        {% if c.lead_id %}
+                        <a href="/leads/{{ c.lead_id }}" style="color:var(--primary);text-decoration:none">#{{ c.lead_id }}</a>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:right">{{ "{:,.0f}".format(c.deal_amount) }} ₽</td>
+                    <td style="padding:8px 10px;text-align:center">{{ c.commission_rate }}%</td>
+                    <td style="padding:8px 10px;text-align:right;font-weight:600">{{ "{:,.0f}".format(c.commission_amount) }} ₽</td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if c.status == 'paid' %}
+                        <span style="color:#16a34a;font-weight:600">Выплачено</span>
+                        {% elif c.status == 'approved' %}
+                        <span style="color:#d97706;font-weight:600">Оплата получена</span>
+                        {% else %}
+                        <span style="color:#6b7280">Ожидает</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if c.status == 'pending' %}
+                        <form method="POST" action="/payments/{{ c.id }}/approve" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm" style="background:#d97706;color:white">Оплата получена</button>
+                        </form>
+                        {% elif c.status == 'approved' %}
+                        <form method="POST" action="/payments/{{ c.id }}/pay" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm" style="background:#16a34a;color:white">Выплатить</button>
+                        </form>
+                        {% else %}
+                        <span style="color:#9ca3af;font-size:11px">✓</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p style="color:var(--text-secondary);font-size:13px">Нет комиссий за выбранный период.</p>
+    {% endif %}
+</div>
+
+{% if penalties %}
+<div class="card" style="border-left:4px solid #dc2626">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:#dc2626">Штрафы ({{ penalties|length }})</h3>
+    <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Дата</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Менеджер</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Причина</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Описание</th>
+                    <th style="text-align:right;padding:8px 10px;font-weight:600">Сумма</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in penalties %}
+                {% set user = user_map.get(p.user_id) %}
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 10px;color:var(--text-secondary)">{{ p.created_at.strftime('%d.%m.%Y') if p.created_at else '—' }}</td>
+                    <td style="padding:8px 10px">
+                        {% if user %}{{ user.full_name or user.username }}{% else %}ID: {{ p.user_id }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px">
+                        {% if p.reason == 'stolen_lead' %}Кража лида
+                        {% elif p.reason == 'slow_response' %}Нарушение SLA
+                        {% elif p.reason == 'fake_reject' %}Фейковый отказ
+                        {% else %}{{ p.reason }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px;font-size:12px;color:var(--text-secondary)">{{ p.description or '—' }}</td>
+                    <td style="padding:8px 10px;text-align:right;font-weight:600;color:#dc2626">-{{ "{:,.0f}".format(p.amount) }} ₽</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

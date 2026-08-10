@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Договоры — Lead Hunter{% endblock %}
+{% block content %}
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Договоры с менеджерами</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Управление договорами, штрафами и комиссиями</p>
+
+<div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Новый договор</h3>
+    <form method="POST" action="/contracts/create" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Менеджер</label>
+            <select name="user_id" required style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                {% for u in all_users %}
+                <option value="{{ u.id }}">{{ u.full_name or u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Комиссия %</label>
+            <input type="number" name="commission_rate" value="5" min="0" max="100" step="0.5" style="width:70px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Мин. сумма сделки</label>
+            <input type="number" name="min_deal_amount" value="10000" min="0" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Штраф за кражу</label>
+            <input type="number" name="penalty_per_stolen_lead" value="10000" min="0" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Штраф за SLA</label>
+            <input type="number" name="penalty_per_sla_breach" value="1000" min="0" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Штраф за фейк</label>
+            <input type="number" name="penalty_per_fake_reject" value="5000" min="0" style="width:100px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">SLA (часы)</label>
+            <input type="number" name="sla_hours" value="24" min="1" style="width:60px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        </div>
+        
+        <button type="submit" class="btn btn-primary">Создать договор</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Договоры ({{ contracts|length }})</h3>
+    
+    {% if contracts %}
+    <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+                <tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Номер</th>
+                    <th style="text-align:left;padding:8px 10px;font-weight:600">Менеджер</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Комиссия</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Штрафы</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">SLA</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Статус</th>
+                    <th style="text-align:center;padding:8px 10px;font-weight:600">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in contracts %}
+                {% set user = user_map.get(c.user_id) %}
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 10px;font-weight:500">{{ c.contract_number }}</td>
+                    <td style="padding:8px 10px">
+                        {% if user %}{{ user.full_name or user.username }}{% else %}ID: {{ c.user_id }}{% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">{{ c.commission_rate }}%</td>
+                    <td style="padding:8px 10px;text-align:center;font-size:11px">
+                        кража: {{ "{:,.0f}".format(c.penalty_per_stolen_lead) }}₽<br>
+                        фейк: {{ "{:,.0f}".format(c.penalty_per_fake_reject) }}₽<br>
+                        SLA: {{ "{:,.0f}".format(c.penalty_per_sla_breach) }}₽
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">{{ c.sla_hours }} ч</td>
+                    <td style="padding:8px 10px;text-align:center">
+                        {% if c.is_active %}
+                            {% if c.signed_at %}
+                            <span style="color:#16a34a;font-weight:600">Подписан</span>
+                            {% else %}
+                            <span style="color:#d97706;font-weight:600">Ожидает</span>
+                            {% endif %}
+                        {% else %}
+                        <span style="color:#9ca3af">Неактивен</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px 10px;text-align:center">
+                        <a href="/contracts/{{ c.id }}" class="btn btn-outline btn-sm" style="text-decoration:none">Просмотр</a>
+                        {% if not c.signed_at %}
+                        <a href="/contracts/{{ c.id }}/sign" class="btn btn-sm" style="background:#16a34a;color:white;text-decoration:none" onclick="return confirm('Подписать договор?')">Подписать</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p style="color:var(--text-secondary);font-size:13px">Договоров пока нет. Создайте первый договор выше.</p>
+    {% endif %}
+</div>
+{% endblock %}

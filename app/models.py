@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, func, Index
+    Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, func, Index, Numeric
 )
 from datetime import datetime
 
@@ -45,6 +45,17 @@ class Tenant(Base):
     city = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     config = Column(_JSONType, default=dict, server_default="{}")
+    
+    # SaaS fields
+    plan = Column(String(20), default="free")  # free, pro, enterprise
+    max_users = Column(Integer, default=3)
+    max_leads_per_month = Column(Integer, default=100)
+    max_chats = Column(Integer, default=5)
+    trial_ends_at = Column(DateTime, nullable=True)
+    subscription_ends_at = Column(DateTime, nullable=True)
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    
     created_at = Column(DateTime, server_default=func.now())
 
     users = relationship("User", back_populates="tenant")
@@ -70,6 +81,7 @@ class User(Base):
     commission_rate = Column(Float, default=0.0)  # % from closed deals
     weight = Column(Float, default=1.0)  # for weighted auto-assignment
     telegram_id = Column(Integer, nullable=True)  # for bot notifications
+    push_subscriptions = Column(_JSONType, default=list)  # web push subscriptions
     created_at = Column(DateTime, default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
@@ -106,13 +118,21 @@ class Lead(Base):
     recommended_message = Column(Text, nullable=True)
     status = Column(String(30), default="new")
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    deal_amount = Column(Float, nullable=True)
+    phone = Column(String(30), nullable=True)
+    deal_amount = Column(Numeric(12, 2), nullable=True)
     deal_currency = Column(String(10), default="RUB")
     deal_closed_at = Column(DateTime, nullable=True)
     is_notified = Column(Integer, default=0)
     feedback = Column(String(10), nullable=True)  # "useful" or "not_useful"
     feedback_reason = Column(String(50), nullable=True)  # spam, off_topic, duplicate, found_crew
     last_responded_at = Column(DateTime, nullable=True)
+    hotness = Column(String(10), default="cold")  # hot, warm, cold
+    ai_summary = Column(Text, nullable=True)
+    next_action = Column(String(10), nullable=True)  # call, write, visit, wait
+    budget = Column(String(20), nullable=True)  # estimate, high, medium, low
+    timeline = Column(String(20), nullable=True)  # asap, 1_3_months, 3_6_months, unknown
+    readiness = Column(String(20), nullable=True)  # ready, planning, just_looking
+    city = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -149,6 +169,18 @@ class Lead(Base):
         if self.lead_score >= 70:
             return "#5a8f8f"
         return "#5a8f6a"
+
+    def hotness_color(self) -> str:
+        colors = {"hot": "#c45a5a", "warm": "#c49a3c", "cold": "#5a8f6a"}
+        return colors.get(self.hotness or "cold", "#5a8f6a")
+
+    def hotness_label(self) -> str:
+        labels = {"hot": "Горячий", "warm": "Тёплый", "cold": "Холодный"}
+        return labels.get(self.hotness or "cold", "Холодный")
+
+    def next_action_label(self) -> str:
+        labels = {"call": "Позвонить", "write": "Написать", "visit": "Встретиться", "wait": "Подождать"}
+        return labels.get(self.next_action, "")
 
 
 class LeadHistory(Base):
@@ -196,6 +228,24 @@ class ProcessedMessage(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     chat_title = Column(String(512), nullable=False)
     message_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class UserMessageHistory(Base):
+    __tablename__ = "user_message_history"
+    __table_args__ = (
+        Index("ix_umh_tenant_user_chat", "tenant_id", "user_id", "chat_title"),
+        Index("ix_umh_tenant_chat", "tenant_id", "chat_title"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, nullable=False, index=True)
+    username = Column(String(255), nullable=True)
+    first_name = Column(String(255), nullable=True)
+    chat_title = Column(String(512), nullable=False)
+    message_id = Column(Integer, nullable=True)
+    text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
 
@@ -331,12 +381,23 @@ class Commission(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True)
     period = Column(String(7), nullable=False)  # "2026-08"
-    deal_amount = Column(Float, default=0.0)
+    deal_amount = Column(Numeric(12, 2), default=0.0)
     commission_rate = Column(Float, default=0.0)
-    commission_amount = Column(Float, default=0.0)
-    bonus_amount = Column(Float, default=0.0)
-    is_paid = Column(Boolean, default=False)
+    commission_amount = Column(Numeric(12, 2), default=0.0)
+    bonus_amount = Column(Numeric(12, 2), default=0.0)
+    
+    # Payment tracking (new fields)
+    status = Column(String(20), default="pending")  # pending, approved, paid
+    payment_received_at = Column(DateTime, nullable=True)  # when client paid
+    payment_proof = Column(Text, nullable=True)  # receipt, screenshot link
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    
+    is_paid = Column(Boolean, default=False)  # legacy field, keep for compatibility
     created_at = Column(DateTime, default=func.now())
+
+    approver = relationship("User", backref="approved_commissions", foreign_keys=[approved_by])
 
 
 class Penalty(Base):
@@ -348,11 +409,15 @@ class Penalty(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reason = Column(String(50), nullable=False)  # missed_lead, slow_response, manual
-    amount = Column(Float, default=0.0)
+    reason = Column(String(50), nullable=False)  # missed_lead, slow_response, manual, stolen_lead, fake_reject, sla_breach
+    amount = Column(Numeric(12, 2), default=0.0)
     description = Column(Text, nullable=True)
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=True)
+    contract_id = Column(Integer, ForeignKey("manager_contracts.id"), nullable=True)
+    is_paid = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())
+
+    contract = relationship("ManagerContract", backref="penalties")
 
 
 class WorkSession(Base):
@@ -388,3 +453,149 @@ class ResponseTimeLog(Base):
     first_response_at = Column(DateTime, nullable=True)
     response_seconds = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=func.now())
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+    __table_args__ = (
+        Index("ix_appointments_tenant_id", "tenant_id"),
+        Index("ix_appointments_lead_id", "lead_id"),
+        Index("ix_appointments_user_id", "user_id"),
+        Index("ix_appointments_scheduled_at", "scheduled_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    scheduled_at = Column(DateTime, nullable=False)
+    duration_minutes = Column(Integer, default=30)
+    status = Column(String(20), default="scheduled")  # scheduled, completed, cancelled, missed
+    reminder_sent = Column(Boolean, default=False)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    lead = relationship("Lead", backref="appointments")
+    user = relationship("User", backref="appointments")
+
+
+class FollowUp(Base):
+    __tablename__ = "follow_ups"
+    __table_args__ = (
+        Index("ix_follow_ups_tenant_id", "tenant_id"),
+        Index("ix_follow_ups_lead_id", "lead_id"),
+        Index("ix_follow_ups_user_id", "user_id"),
+        Index("ix_follow_ups_scheduled_at", "scheduled_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    scheduled_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    note = Column(Text, nullable=True)
+    status = Column(String(20), default="pending")  # pending, completed, cancelled
+    created_at = Column(DateTime, default=func.now())
+
+    lead = relationship("Lead", backref="follow_ups")
+    user = relationship("User", backref="follow_ups")
+
+
+# ==================== MANAGER ACTION TRACKING ====================
+
+class ManagerAction(Base):
+    """Detailed log of every action a manager takes on a lead."""
+    __tablename__ = "manager_actions"
+    __table_args__ = (
+        Index("ix_manager_actions_tenant_user", "tenant_id", "user_id"),
+        Index("ix_manager_actions_lead", "lead_id"),
+        Index("ix_manager_actions_type", "action_type"),
+        Index("ix_manager_actions_created", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    
+    action_type = Column(String(50), nullable=False)
+    # first_contact, follow_up, call_made, call_received, 
+    # appointment_set, deal_started, contact_shared, note_added
+    
+    contact_type = Column(String(20), nullable=True)  # telegram, phone, in_person
+    client_response = Column(Text, nullable=True)  # what the client responded
+    evidence = Column(Text, nullable=True)  # proof: screenshot link, phone number, etc.
+    meta = Column(_JSONType, nullable=True)  # additional data
+    
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    user = relationship("User", backref="manager_actions")
+    lead = relationship("Lead", backref="manager_actions")
+
+
+class ManagerContract(Base):
+    """Contract between company and manager with penalties and commission terms."""
+    __tablename__ = "manager_contracts"
+    __table_args__ = (
+        Index("ix_manager_contracts_tenant_user", "tenant_id", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    contract_number = Column(String(50), unique=True, nullable=False)
+    signed_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    
+    # Commission terms
+    commission_rate = Column(Float, default=0.0)  # percentage
+    min_deal_amount = Column(Numeric(12, 2), default=0.0)  # min deal for commission
+    
+    # Penalties
+    penalty_per_stolen_lead = Column(Numeric(12, 2), default=0.0)
+    penalty_per_sla_breach = Column(Numeric(12, 2), default=0.0)
+    penalty_per_fake_reject = Column(Numeric(12, 2), default=0.0)
+    sla_hours = Column(Integer, default=24)  # max hours without action
+    
+    # Status
+    is_active = Column(Boolean, default=True)
+    contract_file_url = Column(String(512), nullable=True)
+    
+    created_at = Column(DateTime, default=func.now())
+
+    user = relationship("User", backref="contracts")
+
+
+class LeadTheftEvidence(Base):
+    """Evidence of potential lead theft by a manager."""
+    __tablename__ = "lead_theft_evidence"
+    __table_args__ = (
+        Index("ix_theft_evidence_tenant_suspect", "tenant_id", "suspect_user_id"),
+        Index("ix_theft_evidence_lead", "lead_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
+    suspect_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    evidence_type = Column(String(50), nullable=False)
+    # fake_reject, silent_take, quick_deal, repeat_lead, unexplained_transfer
+    
+    confidence = Column(Float, default=0.0)  # 0-100%
+    details = Column(_JSONType, nullable=True)  # evidence details
+    
+    is_confirmed = Column(Boolean, default=False)  # confirmed by admin
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    
+    penalty_id = Column(Integer, ForeignKey("penalties.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    suspect = relationship("User", backref="theft_evidence", foreign_keys=[suspect_user_id])
+    lead = relationship("Lead", backref="theft_evidence")
+    penalty = relationship("Penalty", backref="theft_evidence")

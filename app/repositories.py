@@ -10,7 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     Tenant, User, Lead, LeadHistory, BlacklistedUser, ProcessedMessage, TelegramSession, TenantUsage, ActionLog,
     MessageTemplate, Webhook, LeadSource, EmployeeTarget, Commission, Penalty, WorkSession, ResponseTimeLog,
+    Appointment, FollowUp, ManagerAction, ManagerContract, LeadTheftEvidence,
 )
+from config import utcnow
 
 ModelType = TypeVar("ModelType")
 
@@ -190,6 +192,15 @@ class LeadRepository(BaseRepository):
         )
         return result.scalar_one() or 0
 
+    async def count_today_quality(self, today_start: datetime, min_score: float = 80) -> int:
+        filters = [Lead.status != "deleted", Lead.created_at >= today_start, Lead.lead_score >= min_score]
+        if self.tenant_id is not None:
+            filters.append(Lead.tenant_id == self.tenant_id)
+        result = await self.session.execute(
+            select(sa_func.count(Lead.id)).where(*filters)
+        )
+        return result.scalar_one() or 0
+
     async def count_this_week(self, week_start: datetime) -> int:
         filters = [Lead.status != "deleted", Lead.created_at >= week_start]
         if self.tenant_id is not None:
@@ -228,6 +239,7 @@ class LeadRepository(BaseRepository):
                     Lead.username.ilike(search_pattern),
                     Lead.chat_title.ilike(search_pattern),
                     Lead.reply_to_text.ilike(search_pattern),
+                    Lead.user_id.ilike(search_pattern),
                 )
             )
 
@@ -382,7 +394,7 @@ class LeadRepository(BaseRepository):
         }
 
     async def get_revenue_stats(self, days: int = 30) -> dict:
-        since = datetime.utcnow() - timedelta(days=days)
+        since = utcnow() - timedelta(days=days)
         filters = [Lead.status != "deleted", Lead.deal_amount.isnot(None), Lead.deal_amount > 0]
         if self.tenant_id is not None:
             filters.append(Lead.tenant_id == self.tenant_id)
@@ -441,7 +453,7 @@ class LeadRepository(BaseRepository):
         if lead:
             lead.deal_amount = amount
             lead.deal_currency = currency
-            lead.deal_closed_at = datetime.utcnow()
+            lead.deal_closed_at = utcnow()
             if lead.status != "deal":
                 lead.status = "deal"
             await self.session.flush()
@@ -466,7 +478,7 @@ class LeadRepository(BaseRepository):
         return None
 
     async def is_duplicate(self, user_id: int, dedup_days: int) -> bool:
-        cutoff = datetime.utcnow() - timedelta(days=dedup_days)
+        cutoff = utcnow() - timedelta(days=dedup_days)
         filters = [Lead.user_id == user_id, Lead.created_at >= cutoff]
         if self.tenant_id is not None:
             filters.append(Lead.tenant_id == self.tenant_id)
@@ -540,7 +552,7 @@ class ProcessedMessageRepository(BaseRepository):
         return entry
 
     async def cleanup_old(self, days: int = 30) -> int:
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
         filters = [ProcessedMessage.created_at < cutoff]
         if self.tenant_id is not None:
             filters.append(ProcessedMessage.tenant_id == self.tenant_id)
@@ -620,7 +632,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return entry
 
     async def count_events_today(self, tenant_id: int, event_type: str) -> int:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.count(TenantUsage.id)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -631,7 +643,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return result.scalar() or 0
 
     async def sum_tokens_today(self, tenant_id: int) -> int:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.sum(TenantUsage.tokens_used)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -641,7 +653,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return result.scalar() or 0
 
     async def sum_cost_today(self, tenant_id: int) -> float:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.sum(TenantUsage.cost_usd)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -651,7 +663,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return result.scalar() or 0.0
 
     async def count_events_month(self, tenant_id: int, event_type: str) -> int:
-        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_start = utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.count(TenantUsage.id)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -662,7 +674,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return result.scalar() or 0
 
     async def sum_tokens_month(self, tenant_id: int) -> int:
-        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_start = utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.sum(TenantUsage.tokens_used)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -672,7 +684,7 @@ class TenantUsageRepository(BaseRepository[TenantUsage]):
         return result.scalar() or 0
 
     async def sum_cost_month(self, tenant_id: int) -> float:
-        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_start = utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         result = await self.session.execute(
             select(sa_func.sum(TenantUsage.cost_usd)).where(
                 TenantUsage.tenant_id == tenant_id,
@@ -916,7 +928,7 @@ class WebhookRepository(BaseRepository):
     async def mark_triggered(self, webhook_id: int, success: bool):
         wh = await self.get_by_id(webhook_id)
         if wh:
-            wh.last_triggered = datetime.utcnow()
+            wh.last_triggered = utcnow()
             if not success:
                 wh.fail_count = (wh.fail_count or 0) + 1
             else:
@@ -1069,18 +1081,18 @@ class WorkSessionRepository(BaseRepository):
                 tenant_id=self.tenant_id,
                 user_id=user_id,
                 date=today,
-                login_at=datetime.utcnow(),
+                login_at=utcnow(),
             )
             self.session.add(ws)
         else:
-            ws.login_at = ws.login_at or datetime.utcnow()
+            ws.login_at = ws.login_at or utcnow()
         await self.session.flush()
         return ws
 
     async def record_logout(self, user_id: int):
         ws = await self.get_today(user_id)
         if ws and not ws.logout_at:
-            ws.logout_at = datetime.utcnow()
+            ws.logout_at = utcnow()
             if ws.login_at:
                 ws.total_seconds = int((ws.logout_at - ws.login_at).total_seconds())
         return ws
@@ -1118,7 +1130,7 @@ class ResponseTimeRepository(BaseRepository):
             tenant_id=self.tenant_id,
             user_id=user_id,
             lead_id=lead_id,
-            assigned_at=datetime.utcnow(),
+            assigned_at=utcnow(),
         )
         self.session.add(rtl)
         await self.session.flush()
@@ -1130,14 +1142,14 @@ class ResponseTimeRepository(BaseRepository):
             q = q.where(ResponseTimeLog.tenant_id == self.tenant_id)
         rtl = (await self.session.execute(q)).scalar_one_or_none()
         if rtl and not rtl.first_response_at:
-            rtl.first_response_at = datetime.utcnow()
+            rtl.first_response_at = utcnow()
             rtl.response_seconds = int((rtl.first_response_at - rtl.assigned_at).total_seconds())
         return rtl
 
     async def get_avg_response_time(self, user_id: int, days: int = 30):
         from sqlalchemy import func as sqlfunc
         from datetime import timedelta
-        since = datetime.utcnow() - timedelta(days=days)
+        since = utcnow() - timedelta(days=days)
         q = select(sqlfunc.avg(ResponseTimeLog.response_seconds)).where(
             ResponseTimeLog.user_id == user_id,
             ResponseTimeLog.response_seconds.isnot(None),
@@ -1149,7 +1161,7 @@ class ResponseTimeRepository(BaseRepository):
 
     async def list_by_user(self, user_id: int, days: int = 30):
         from datetime import timedelta
-        since = datetime.utcnow() - timedelta(days=days)
+        since = utcnow() - timedelta(days=days)
         q = select(ResponseTimeLog).where(
             ResponseTimeLog.user_id == user_id,
             ResponseTimeLog.created_at >= since,
@@ -1179,3 +1191,429 @@ class LeadSourceRepository(BaseRepository):
         if self.tenant_id is not None:
             q = q.where(LeadSource.tenant_id == self.tenant_id)
         return (await self.session.execute(q)).scalars().all()
+
+
+class AppointmentRepository(BaseRepository):
+    model = Appointment
+
+    async def create(self, lead_id: int, user_id: int, title: str, scheduled_at,
+                     description: str = None, duration_minutes: int = 30) -> Appointment:
+        apt = Appointment(
+            tenant_id=self.tenant_id,
+            lead_id=lead_id,
+            user_id=user_id,
+            title=title,
+            description=description,
+            scheduled_at=scheduled_at,
+            duration_minutes=duration_minutes,
+        )
+        self.session.add(apt)
+        await self.session.flush()
+        return apt
+
+    async def get_by_id(self, apt_id: int):
+        q = select(Appointment).where(Appointment.id == apt_id)
+        if self.tenant_id is not None:
+            q = q.where(Appointment.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def list_upcoming(self, user_id: int = None, days: int = 7):
+        from datetime import timedelta
+        since = utcnow()
+        until = since + timedelta(days=days)
+        q = select(Appointment).where(
+            Appointment.status == "scheduled",
+            Appointment.scheduled_at >= since,
+            Appointment.scheduled_at <= until,
+        )
+        if self.tenant_id is not None:
+            q = q.where(Appointment.tenant_id == self.tenant_id)
+        if user_id:
+            q = q.where(Appointment.user_id == user_id)
+        q = q.order_by(Appointment.scheduled_at.asc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_pending_reminders(self):
+        now = utcnow()
+        q = select(Appointment).where(
+            Appointment.status == "scheduled",
+            Appointment.reminder_sent == False,
+            Appointment.scheduled_at <= now,
+        )
+        if self.tenant_id is not None:
+            q = q.where(Appointment.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def complete(self, apt_id: int):
+        apt = await self.get_by_id(apt_id)
+        if apt:
+            apt.status = "completed"
+            apt.completed_at = utcnow()
+        return apt
+
+    async def cancel(self, apt_id: int):
+        apt = await self.get_by_id(apt_id)
+        if apt:
+            apt.status = "cancelled"
+        return apt
+
+
+class FollowUpRepository(BaseRepository):
+    model = FollowUp
+
+    async def create(self, lead_id: int, user_id: int, scheduled_at,
+                     note: str = None) -> FollowUp:
+        fu = FollowUp(
+            tenant_id=self.tenant_id,
+            lead_id=lead_id,
+            user_id=user_id,
+            scheduled_at=scheduled_at,
+            note=note,
+        )
+        self.session.add(fu)
+        await self.session.flush()
+        return fu
+
+    async def get_pending(self, user_id: int = None):
+        now = utcnow()
+        q = select(FollowUp).where(
+            FollowUp.status == "pending",
+            FollowUp.scheduled_at <= now,
+        )
+        if self.tenant_id is not None:
+            q = q.where(FollowUp.tenant_id == self.tenant_id)
+        if user_id:
+            q = q.where(FollowUp.user_id == user_id)
+        return (await self.session.execute(q)).scalars().all()
+
+    async def complete(self, fu_id: int):
+        fu = await self.session.get(FollowUp, fu_id)
+        if fu:
+            fu.status = "completed"
+            fu.completed_at = utcnow()
+        return fu
+
+    async def cancel(self, fu_id: int):
+        fu = await self.session.get(FollowUp, fu_id)
+        if fu:
+            fu.status = "cancelled"
+        return fu
+
+    async def list_by_lead(self, lead_id: int):
+        q = select(FollowUp).where(FollowUp.lead_id == lead_id)
+        if self.tenant_id is not None:
+            q = q.where(FollowUp.tenant_id == self.tenant_id)
+        q = q.order_by(FollowUp.scheduled_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+
+# ==================== MANAGER ACTION TRACKING ====================
+
+class ManagerActionRepository(BaseRepository):
+    model = ManagerAction
+
+    async def log_action(self, lead_id: int, user_id: int, action_type: str,
+                         contact_type: str = None, client_response: str = None,
+                         evidence: str = None, meta: dict = None) -> ManagerAction:
+        """Log a manager action on a lead."""
+        action = ManagerAction(
+            tenant_id=self.tenant_id,
+            lead_id=lead_id,
+            user_id=user_id,
+            action_type=action_type,
+            contact_type=contact_type,
+            client_response=client_response,
+            evidence=evidence,
+            meta=meta,
+        )
+        self.session.add(action)
+        await self.session.flush()
+        return action
+
+    async def get_lead_actions(self, lead_id: int) -> list[ManagerAction]:
+        """Get all actions for a specific lead."""
+        q = select(ManagerAction).where(ManagerAction.lead_id == lead_id)
+        if self.tenant_id is not None:
+            q = q.where(ManagerAction.tenant_id == self.tenant_id)
+        q = q.order_by(ManagerAction.created_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_manager_actions(self, user_id: int, days: int = 30) -> list[ManagerAction]:
+        """Get all actions by a manager in the last N days."""
+        since = utcnow() - timedelta(days=days)
+        q = select(ManagerAction).where(
+            ManagerAction.user_id == user_id,
+            ManagerAction.created_at >= since,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ManagerAction.tenant_id == self.tenant_id)
+        q = q.order_by(ManagerAction.created_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def has_action(self, lead_id: int, user_id: int, action_type: str) -> bool:
+        """Check if a specific action exists for a lead."""
+        q = select(ManagerAction).where(
+            ManagerAction.lead_id == lead_id,
+            ManagerAction.user_id == user_id,
+            ManagerAction.action_type == action_type,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ManagerAction.tenant_id == self.tenant_id)
+        result = await self.session.execute(q)
+        return result.scalar_one_or_none() is not None
+
+    async def get_actions_count(self, user_id: int, lead_id: int) -> int:
+        """Count actions by a manager on a lead."""
+        q = select(sa_func.count()).where(
+            ManagerAction.lead_id == lead_id,
+            ManagerAction.user_id == user_id,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ManagerAction.tenant_id == self.tenant_id)
+        return (await self.session.execute(q)).scalar() or 0
+
+
+# ==================== MANAGER CONTRACTS ====================
+
+class ManagerContractRepository(BaseRepository):
+    model = ManagerContract
+
+    async def create(self, user_id: int, contract_number: str,
+                     commission_rate: float = 0.0, min_deal_amount: float = 0.0,
+                     penalty_per_stolen_lead: float = 10000.0,
+                     penalty_per_sla_breach: float = 1000.0,
+                     penalty_per_fake_reject: float = 5000.0,
+                     sla_hours: int = 24,
+                     expires_at: datetime = None) -> ManagerContract:
+        """Create a new manager contract."""
+        contract = ManagerContract(
+            tenant_id=self.tenant_id,
+            user_id=user_id,
+            contract_number=contract_number,
+            commission_rate=commission_rate,
+            min_deal_amount=min_deal_amount,
+            penalty_per_stolen_lead=penalty_per_stolen_lead,
+            penalty_per_sla_breach=penalty_per_sla_breach,
+            penalty_per_fake_reject=penalty_per_fake_reject,
+            sla_hours=sla_hours,
+            expires_at=expires_at,
+        )
+        self.session.add(contract)
+        await self.session.flush()
+        return contract
+
+    async def get_active_contract(self, user_id: int) -> ManagerContract | None:
+        """Get the active contract for a manager."""
+        q = select(ManagerContract).where(
+            ManagerContract.user_id == user_id,
+            ManagerContract.is_active == True,
+        )
+        if self.tenant_id is not None:
+            q = q.where(ManagerContract.tenant_id == self.tenant_id)
+        result = await self.session.execute(q)
+        return result.scalar_one_or_none()
+
+    async def sign_contract(self, contract_id: int) -> ManagerContract:
+        """Mark a contract as signed."""
+        contract = await self.session.get(ManagerContract, contract_id)
+        if contract:
+            contract.signed_at = utcnow()
+        return contract
+
+    async def list_contracts(self, include_expired: bool = False) -> list[ManagerContract]:
+        """List all contracts for this tenant."""
+        q = select(ManagerContract)
+        if self.tenant_id is not None:
+            q = q.where(ManagerContract.tenant_id == self.tenant_id)
+        if not include_expired:
+            q = q.where(ManagerContract.is_active == True)
+        q = q.order_by(ManagerContract.created_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+
+# ==================== THEFT DETECTION ====================
+
+class TheftDetectionRepository(BaseRepository):
+    model = LeadTheftEvidence
+
+    async def create_evidence(self, lead_id: int, suspect_user_id: int,
+                              evidence_type: str, confidence: float,
+                              details: dict = None) -> LeadTheftEvidence:
+        """Create a theft evidence record."""
+        evidence = LeadTheftEvidence(
+            tenant_id=self.tenant_id,
+            lead_id=lead_id,
+            suspect_user_id=suspect_user_id,
+            evidence_type=evidence_type,
+            confidence=confidence,
+            details=details,
+        )
+        self.session.add(evidence)
+        await self.session.flush()
+        return evidence
+
+    async def confirm_evidence(self, evidence_id: int, confirmed_by: int,
+                               penalty_id: int = None) -> LeadTheftEvidence:
+        """Admin confirms theft evidence."""
+        evidence = await self.session.get(LeadTheftEvidence, evidence_id)
+        if evidence:
+            evidence.is_confirmed = True
+            evidence.confirmed_by = confirmed_by
+            evidence.confirmed_at = utcnow()
+            if penalty_id:
+                evidence.penalty_id = penalty_id
+        return evidence
+
+    async def get_suspicious_activity(self, min_confidence: float = 50.0,
+                                       confirmed_only: bool = False) -> list[LeadTheftEvidence]:
+        """Get all suspicious activity above confidence threshold."""
+        q = select(LeadTheftEvidence)
+        if self.tenant_id is not None:
+            q = q.where(LeadTheftEvidence.tenant_id == self.tenant_id)
+        if confirmed_only:
+            q = q.where(LeadTheftEvidence.is_confirmed == True)
+        else:
+            q = q.where(LeadTheftEvidence.confidence >= min_confidence)
+        q = q.order_by(LeadTheftEvidence.created_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def get_user_evidence(self, user_id: int) -> list[LeadTheftEvidence]:
+        """Get all evidence against a specific user."""
+        q = select(LeadTheftEvidence).where(LeadTheftEvidence.suspect_user_id == user_id)
+        if self.tenant_id is not None:
+            q = q.where(LeadTheftEvidence.tenant_id == self.tenant_id)
+        q = q.order_by(LeadTheftEvidence.created_at.desc())
+        return (await self.session.execute(q)).scalars().all()
+
+    async def detect_fake_rejects(self, days: int = 30) -> list[dict]:
+        """Detect managers who rejected leads but clients returned."""
+        since = utcnow() - timedelta(days=days)
+        
+        # Find leads rejected in the period
+        rejected_q = select(Lead).where(
+            Lead.status == "not_interested",
+            Lead.assigned_to.isnot(None),
+            Lead.updated_at >= since,
+        )
+        if self.tenant_id is not None:
+            rejected_q = rejected_q.where(Lead.tenant_id == self.tenant_id)
+        
+        rejected_leads = (await self.session.execute(rejected_q)).scalars().all()
+        results = []
+        
+        for lead in rejected_leads:
+            # Check if same user_id appeared in another lead later
+            if lead.user_id:
+                reappear_q = select(Lead).where(
+                    Lead.user_id == lead.user_id,
+                    Lead.id != lead.id,
+                    Lead.created_at > lead.updated_at,
+                )
+                if self.tenant_id is not None:
+                    reappear_q = reappear_q.where(Lead.tenant_id == self.tenant_id)
+                
+                reappeared = (await self.session.execute(reappear_q)).scalar_one_or_none()
+                if reappeared:
+                    days_diff = (reappeared.created_at - lead.updated_at).days
+                    confidence = min(90, 50 + (30 - days_diff) * 2)  # higher confidence if returned quickly
+                    results.append({
+                        "lead_id": lead.id,
+                        "suspect_user_id": lead.assigned_to,
+                        "evidence_type": "fake_reject",
+                        "confidence": confidence,
+                        "details": {
+                            "reject_time": lead.updated_at.isoformat(),
+                            "reappear_time": reappeared.created_at.isoformat(),
+                            "days_diff": days_diff,
+                            "new_lead_id": reappeared.id,
+                        }
+                    })
+        
+        return results
+
+    async def detect_silent_takes(self, hours: int = 24) -> list[dict]:
+        """Detect managers who took leads but never contacted them."""
+        since = utcnow() - timedelta(hours=hours)
+        
+        # Find leads that were taken but have no actions
+        q = select(Lead).where(
+            Lead.status == "contacted",
+            Lead.assigned_to.isnot(None),
+            Lead.updated_at <= since,
+        )
+        if self.tenant_id is not None:
+            q = q.where(Lead.tenant_id == self.tenant_id)
+        
+        stale_leads = (await self.session.execute(q)).scalars().all()
+        results = []
+        
+        for lead in stale_leads:
+            # Check if any manager action exists
+            action_q = select(sa_func.count()).where(
+                ManagerAction.lead_id == lead.id,
+                ManagerAction.user_id == lead.assigned_to,
+            )
+            if self.tenant_id is not None:
+                action_q = action_q.where(ManagerAction.tenant_id == self.tenant_id)
+            
+            action_count = (await self.session.execute(action_q)).scalar() or 0
+            if action_count == 0:
+                hours_since = (utcnow() - lead.updated_at).total_seconds() / 3600
+                confidence = min(85, 40 + hours_since * 2)
+                results.append({
+                    "lead_id": lead.id,
+                    "suspect_user_id": lead.assigned_to,
+                    "evidence_type": "silent_take",
+                    "confidence": confidence,
+                    "details": {
+                        "assigned_at": lead.updated_at.isoformat(),
+                        "hours_since": round(hours_since, 1),
+                    }
+                })
+        
+        return results
+
+    async def detect_quick_deals(self, min_hours: float = 1.0) -> list[dict]:
+        """Detect suspiciously fast deal closures."""
+        q = select(Lead).where(
+            Lead.status == "deal",
+            Lead.assigned_to.isnot(None),
+            Lead.deal_closed_at.isnot(None),
+        )
+        if self.tenant_id is not None:
+            q = q.where(Lead.tenant_id == self.tenant_id)
+        
+        deals = (await self.session.execute(q)).scalars().all()
+        results = []
+        
+        for lead in deals:
+            # Check time between assignment and deal closure
+            assignment_q = select(LeadHistory).where(
+                LeadHistory.lead_id == lead.id,
+                LeadHistory.action.in_(["created", "auto_assigned", "reassigned"]),
+            ).order_by(LeadHistory.created_at.asc()).limit(1)
+            
+            assignment = (await self.session.execute(assignment_q)).scalar_one_or_none()
+            if assignment and lead.deal_closed_at:
+                hours_diff = (lead.deal_closed_at - assignment.created_at).total_seconds() / 3600
+                if hours_diff < min_hours:
+                    # Check for intermediate actions
+                    action_count = await ManagerActionRepository(self.session, self.tenant_id).get_actions_count(
+                        lead.assigned_to, lead.id
+                    )
+                    if action_count <= 1:  # only "take lead" or nothing
+                        confidence = min(80, 60 + (min_hours - hours_diff) * 10)
+                        results.append({
+                            "lead_id": lead.id,
+                            "suspect_user_id": lead.assigned_to,
+                            "evidence_type": "quick_deal",
+                            "confidence": confidence,
+                            "details": {
+                                "assignment_time": assignment.created_at.isoformat(),
+                                "deal_time": lead.deal_closed_at.isoformat(),
+                                "hours_diff": round(hours_diff, 2),
+                                "action_count": action_count,
+                            }
+                        })
+        
+        return results
