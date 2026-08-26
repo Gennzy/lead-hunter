@@ -1,0 +1,24 @@
+name: Deploy to Production
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'app/templates/kanban.html'
+      - 'app/**'
+      - '.github/workflows/deploy.yml'
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 77.233.213.224
+          username: leadhunter
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd ~/lead-hunter
+            git pull origin master
+            sudo systemctl restart leadhunter
+            echo "Deployed $(git rev-parse --short HEAD)"
