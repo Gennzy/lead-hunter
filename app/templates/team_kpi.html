@@ -2,57 +2,76 @@
 {% block title %}KPI сотрудников — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>KPI и цели — {{ current_period }}</h1>
-</div>
-
-<div class="card">
-    <div class="table-wrap">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Сотрудник</th>
-                    <th>Цель лиды</th>
-                    <th>Факт лиды</th>
-                    <th>Прогресс</th>
-                    <th>Цель сделки</th>
-                    <th>Факт сделки</th>
-                    <th>Цель выручка</th>
-                    <th>Факт выручка</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in kpi_data %}
-                <tr>
-                    <td><strong>{{ item.user.full_name or item.user.username }}</strong></td>
-                    <td>{{ item.target.target_leads }}</td>
-                    <td>{{ item.target.actual_leads }}</td>
-                    <td>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <div style="flex:1;height:8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">
-                                <div style="height:100%;width:{{ [item.leads_pct, 100]|min }}%;background:{% if item.leads_pct >= 100 %}var(--color-success){% elif item.leads_pct >= 50 %}var(--color-accent){% else %}var(--color-danger){% endif %};border-radius:4px"></div>
-                            </div>
-                            <span style="font-size:12px;min-width:40px">{{ item.leads_pct }}%</span>
-                        </div>
-                    </td>
-                    <td>{{ item.target.target_deals }}</td>
-                    <td>{{ item.target.actual_deals }}</td>
-                    <td>{{ "{:,.0f}".format(item.target.target_revenue) }} ₽</td>
-                    <td>{{ "{:,.0f}".format(item.target.actual_revenue) }} ₽</td>
-                    <td>
-                        <button class="btn btn-sm btn-outline" onclick="openTargetModal({{ item.user.id }}, '{{ item.user.full_name or item.user.username }}', {{ item.target.target_leads }}, {{ item.target.target_deals }}, {{ item.target.target_revenue }})">Настроить</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">KPI — {{ current_period }}</h1>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="month" value="{{ current_period }}" onchange="window.location.href='/team/kpi?period='+this.value" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg-input);color:var(--text)">
+        <a href="/team/kpi/export/csv?period={{ current_period }}" class="btn btn-outline btn-sm">CSV</a>
     </div>
 </div>
 
+{% if not kpi_data %}
+<div class="card" style="text-align:center;padding:60px 20px">
+    <div style="font-size:48px;margin-bottom:16px"></div>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;margin-bottom:8px;color:var(--text)">Нет данных за этот период</h3>
+    <p style="color:var(--text-muted);max-width:400px;margin:0 auto">
+        KPI появятся когда сотрудники начнут обрабатывать лиды.
+        Назначьте ответственных за лиды и настройте цели.
+    </p>
+</div>
+{% else %}
+
+<div class="grid-2" style="gap:16px">
+    {% for item in kpi_data %}
+    <div class="card" style="padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <div>
+                <div style="font-weight:600;font-size:15px">{{ item.user.full_name or item.user.username }}</div>
+                <div style="font-size:12px;color:var(--text-muted)">{{ item.user.role }}</div>
+            </div>
+            <button class="btn btn-sm btn-outline" onclick="openTargetModal({{ item.user.id }}, '{{ item.user.full_name or item.user.username }}', {{ item.target.target_leads }}, {{ item.target.target_deals }}, {{ item.target.target_revenue }})">Настроить</button>
+        </div>
+
+        <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+                <span>Лиды</span>
+                <span><b>{{ item.target.actual_leads }}</b> / {{ item.target.target_leads }}</span>
+            </div>
+            <div style="height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:{{ [item.leads_pct, 100]|min }}%;background:{% if item.leads_pct >= 100 %}var(--success){% elif item.leads_pct >= 50 %}var(--primary){% else %}var(--danger){% endif %};border-radius:4px;transition:width .3s"></div>
+            </div>
+            <div style="text-align:right;font-size:11px;color:var(--text-muted);margin-top:2px">{% if item.target.target_leads > 0 %}{{ item.leads_pct }}%{% else %}—{% endif %}</div>
+        </div>
+
+        <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+                <span>Сделки</span>
+                <span><b>{{ item.target.actual_deals }}</b> / {{ item.target.target_deals }}</span>
+            </div>
+            <div style="height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:{{ [item.deals_pct, 100]|min }}%;background:{% if item.deals_pct >= 100 %}var(--success){% elif item.deals_pct >= 50 %}var(--primary){% else %}var(--danger){% endif %};border-radius:4px;transition:width .3s"></div>
+            </div>
+            <div style="text-align:right;font-size:11px;color:var(--text-muted);margin-top:2px">{% if item.target.target_deals > 0 %}{{ item.deals_pct }}%{% else %}—{% endif %}</div>
+        </div>
+
+        <div>
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+                <span>Выручка</span>
+                <span><b>{{ "{:,.0f}".format(item.target.actual_revenue) }}</b> / {{ "{:,.0f}".format(item.target.target_revenue) }} ₽</span>
+            </div>
+            <div style="height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:{{ [item.revenue_pct, 100]|min }}%;background:{% if item.revenue_pct >= 100 %}var(--success){% elif item.revenue_pct >= 50 %}var(--primary){% else %}var(--danger){% endif %};border-radius:4px;transition:width .3s"></div>
+            </div>
+            <div style="text-align:right;font-size:11px;color:var(--text-muted);margin-top:2px">{% if item.target.target_revenue > 0 %}{{ item.revenue_pct }}%{% else %}—{% endif %}</div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <div id="targetModal" class="modal" style="display:none">
-    <div class="modal-content" style="max-width:500px">
+    <div class="modal-content" style="max-width:420px">
         <div class="modal-header">
-            <h3>Настроить цель: <span id="targetUserName"></span></h3>
+            <h3>Цель: <span id="targetUserName"></span></h3>
             <button class="modal-close" onclick="document.getElementById('targetModal').style.display='none'">&times;</button>
         </div>
         <form method="post" action="/team/kpi/set-target" style="padding:20px 24px">

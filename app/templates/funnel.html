@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Воронка — Lead Hunter{% endblock %}
+{% block content %}
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Воронка конверсии</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Путь лида: от создания до сделки</p>
+
+<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;gap:10px;align-items:end">
+        <div class="form-group" style="margin:0">
+            <label style="font-size:12px;font-weight:600">Период</label>
+            <select onchange="window.location.href='/funnel?days='+this.value" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+                <option value="1" {% if days == 1 %}selected{% endif %}>За день</option>
+                <option value="7" {% if days == 7 %}selected{% endif %}>За неделю</option>
+                <option value="30" {% if days == 30 %}selected{% endif %}>За месяц</option>
+                <option value="90" {% if days == 90 %}selected{% endif %}>За 3 месяца</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Этапы воронки</h3>
+    {% for s in steps %}
+    <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+            <span>{{ s.label }}</span>
+            <span style="font-weight:700">{{ s.value }}{% if s.conv is not none %} <span style="color:var(--text-muted);font-weight:400">({{ s.conv }}% от пред.)</span>{% endif %}</span>
+        </div>
+        <div style="background:var(--bg-subtle);border-radius:var(--r-full);height:22px;overflow:hidden">
+            <div style="width:{{ s.pct }}%;height:100%;border-radius:var(--r-full);
+                        background:{{ ['#5a8f8f','#5a8f8f','#c49a3c','#c49a3c','#5a8f6a'][loop.index0] }};
+                        transition:width .3s"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px">
+    <div class="card">
+        <div style="font-size:12px;color:var(--text-muted)">Сумма сделок за период</div>
+        <div style="font-size:22px;font-weight:700;margin-top:4px">{{ '{:,.0f}'.format(deals_sum)|replace(',', ' ') }} ₽</div>
+    </div>
+    <div class="card">
+        <div style="font-size:12px;color:var(--text-muted)">Конверсия в сделку</div>
+        <div style="font-size:22px;font-weight:700;margin-top:4px">
+            {% if steps[0].value %}{{ ((steps[4].value / steps[0].value) * 100)|round(1) }}%{% else %}—{% endif %}
+        </div>
+    </div>
+    <div class="card">
+        <div style="font-size:12px;color:var(--text-muted)">Отмечено «не лид»</div>
+        <div style="font-size:22px;font-weight:700;margin-top:4px">{{ not_lead_count }}</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Лиды по статусам</h3>
+    {% for st in stages %}
+    <div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+            <span>{{ st.label }}</span>
+            <span style="font-weight:600">{{ st.count }}</span>
+        </div>
+        <div style="background:var(--bg-subtle);border-radius:var(--r-full);height:14px;overflow:hidden">
+            <div style="width:{{ (st.count / max_stage * 100)|round|int }}%;height:100%;background:#7a9ec2;border-radius:var(--r-full)"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:4px">Прогноз pipeline (открытые лиды)</h3>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        Взвешенная ожидаемая выручка: лиды × вероятность этапа × средний чек
+        {% if avg_deal %}({{ '{:,.0f}'.format(avg_deal)|replace(',', ' ') }} ₽){% endif %}
+    </p>
+    {% if avg_deal > 0 %}
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px">
+        <span style="font-size:26px;font-weight:700">{{ '{:,.0f}'.format(pipeline_total)|replace(',', ' ') }} ₽</span>
+        <span style="font-size:12px;color:var(--text-muted)">ожидаемая выручка</span>
+    </div>
+    {% for p in pipeline_stages %}
+    {% if p.count %}
+    <div style="display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid var(--border)">
+        <span>{{ p.label }} <span style="color:var(--text-muted)">× {{ p.weight }}%</span></span>
+        <span>{{ p.count }} лид. → <b>{{ '{:,.0f}'.format(p.value)|replace(',', ' ') }} ₽</b></span>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    <p style="font-size:13px;color:var(--text-muted)">
+        Прогноз появится после первой закрытой сделки — нужен средний чек.
+    </p>
+    {% endif %}
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:16px">
+    <div class="card">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:4px">Качество лидов — кто отсеивает мусор</h3>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">За период: принято {{ steps[0].value }} лидов</p>
+        {% set rs = [
+            ('keyword', 'Ключевые фильтры', '#5a8f8f'),
+            ('validator', 'LLM-валидатор', '#c49a3c'),
+            ('llm', 'LLM-анализ (не лид)', '#7a9ec2'),
+            ('score', 'Ниже порога score', '#9a7ab5')
+        ] %}
+        {% for key, label, color in rs %}
+        {% set v = reject_by_source.get(key, 0) %}
+        <div style="display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid var(--border)">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{{ color }};margin-right:6px"></span>{{ label }}</span>
+            <span style="font-weight:700">{{ v }}</span>
+        </div>
+        {% endfor %}
+        <h4 style="font-size:13px;font-weight:600;margin:14px 0 6px">Топ причин отсева</h4>
+        {% for r in top_reasons[:6] %}
+        <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:var(--text-secondary)">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%">{{ r.reason }}</span>
+            <span style="font-weight:600">{{ r.cnt }}</span>
+        </div>
+        {% else %}
+        <p style="font-size:12px;color:var(--text-muted)">Данных пока нет — статистика собирается с момента обновления</p>
+        {% endfor %}
+        <h4 style="font-size:13px;font-weight:600;margin:14px 0 6px">Слепые зоны (чаты-лидеры по отсеву)</h4>
+        {% for z in blind_zones %}
+        <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:var(--text-secondary)">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%">{{ z.chat }}</span>
+            <span style="font-weight:600">{{ z.cnt }}</span>
+        </div>
+        {% else %}
+        <p style="font-size:12px;color:var(--text-muted)">Нет данных</p>
+        {% endfor %}
+    </div>
+
+    <div class="card">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Воронка по источникам</h3>
+        <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border)">
+                        <th style="text-align:left;padding:6px 8px;font-weight:600">Чат</th>
+                        <th style="text-align:center;padding:6px 8px;font-weight:600">Лидов</th>
+                        <th style="text-align:center;padding:6px 8px;font-weight:600">Сделок</th>
+                        <th style="text-align:right;padding:6px 8px;font-weight:600">Сумма</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in sources %}
+                    <tr style="border-bottom:1px solid var(--border)">
+                        <td style="padding:6px 8px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ s.title }}">{{ s.title }}</td>
+                        <td style="text-align:center;padding:6px 8px">{{ s.leads }}</td>
+                        <td style="text-align:center;padding:6px 8px">{{ s.deals }}</td>
+                        <td style="text-align:right;padding:6px 8px;font-weight:600">{{ '{:,.0f}'.format(s.sum)|replace(',', ' ') }} ₽</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" style="padding:10px;color:var(--text-muted);font-size:12px">Нет данных за период</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:4px">Авто-предложения по шуму и ключам</h3>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        На основе {{ fb_total }} оценок «полезно/бесполезно». {% if fb_message %}{{ fb_message }}{% endif %}
+    </p>
+    {% for sug in suggestions %}
+    <div id="sug-{{ loop.index }}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:0">
+            <span style="font-weight:600">{{ sug.word }}</span>
+            <span style="color:var(--text-muted);font-size:12px;margin-left:8px">{{ sug.reason }} (уверенность {{ sug.confidence|round(0)|int }}%)</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+            {% if sug.type == 'add_noise' %}
+            <button class="btn btn-sm" style="background:#5a8f8f;color:#fff;border:none" onclick="addWord('noise_keywords','{{ sug.word|e }}',{{ loop.index }})">В шум</button>
+            {% else %}
+            <button class="btn btn-sm" style="background:#5a8f6a;color:#fff;border:none" onclick="addWord('keywords','{{ sug.word|e }}',{{ loop.index }})">В ключи</button>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <p style="font-size:13px;color:var(--text-muted)">Предложений нет — нужно минимум 5 оценок лидов</p>
+    {% endfor %}
+</div>
+
+<script>
+async function addWord(field, word, idx){
+    try {
+        var r = await fetch('/api/config/add-word', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({field: field, word: word})
+        });
+        if (r.ok) {
+            var el = document.getElementById('sug-' + idx);
+            if (el) { el.style.opacity = '.45'; el.querySelectorAll('button').forEach(function(b){b.disabled=true;b.textContent='Добавлено';}); }
+        }
+    } catch(e) {}
+}
+</script>
+{% endblock %}

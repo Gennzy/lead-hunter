@@ -1,4 +1,4 @@
-const CACHE_NAME = 'leadhunter-v1';
+const CACHE_NAME = 'leadhunter-v2';
 const STATIC_ASSETS = [
     '/static/css/style.css',
     '/static/favicon.svg',
@@ -33,6 +33,41 @@ self.addEventListener('fetch', event => {
                 return response;
             }).catch(() => cached);
             return cached || fetchPromise;
+        })
+    );
+});
+
+self.addEventListener('push', event => {
+    let data = { title: 'Lead Hunter', body: 'Новое уведомление', url: '/' };
+    try {
+        data = event.data.json();
+    } catch (e) {}
+
+    event.waitUntil(
+        self.registration.showNotification(data.title, {
+            body: data.body,
+            icon: '/static/uploads/favicon_1786034026.png',
+            badge: '/static/favicon.svg',
+            data: { url: data.url || '/' },
+            actions: [
+                { action: 'open', title: 'Открыть' }
+            ]
+        })
+    );
+});
+
+self.addEventListener('notificationclick', event => {
+    event.notification.close();
+    const url = event.notification.data?.url || '/';
+    event.waitUntil(
+        clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+            for (const client of windowClients) {
+                if (client.url.includes(self.location.origin) && 'focus' in client) {
+                    client.navigate(url);
+                    return client.focus();
+                }
+            }
+            return clients.openWindow(url);
         })
     );
 });

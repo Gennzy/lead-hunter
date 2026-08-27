@@ -46,6 +46,7 @@ async def init_db():
                     "noise_keywords": NOISE_KEYWORDS_LIST,
                     "min_lead_score": settings.min_lead_score,
                     "system_prompt": "",
+                    "require_keywords": False,
                 },
             )
             session.add(default_tenant)

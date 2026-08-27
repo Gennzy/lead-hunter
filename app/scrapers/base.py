@@ -1,11 +1,35 @@
 """Base scraper class for all lead sources."""
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def retry_on_error(max_retries=3, backoff=2):
+    """Decorator for retry with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = backoff ** attempt
+                        logger.warning("Scraper error (attempt %d/%d), retrying in %ds: %s",
+                                      attempt + 1, max_retries, wait, e)
+                        await asyncio.sleep(wait)
+            logger.error("Scraper failed after %d attempts: %s", max_retries, last_error)
+            raise last_error
+        return wrapper
+    return decorator
 
 
 @dataclass
@@ -35,6 +59,15 @@ class BaseScraper(ABC):
     def __init__(self, config: dict = None):
         self.config = config or {}
         self.logger = logging.getLogger(f"scraper.{self.SOURCE_NAME}")
+        self._errors = []
+
+    def log_error(self, error: str):
+        self._errors.append({"time": datetime.utcnow().isoformat(), "error": error})
+        if len(self._errors) > 50:
+            self._errors = self._errors[-50:]
+
+    def get_errors(self) -> list:
+        return self._errors[-10:]
 
     @abstractmethod
     async def search(self, query: str, city: str = "", limit: int = 50) -> list[ScrapedLead]:

@@ -2,7 +2,7 @@
 {% block title %}Аналитика сотрудников — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>Аналитика по сотрудникам</h1>
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Аналитика по сотрудникам</h1>
     <form method="get" action="/team/analytics" style="display:flex;gap:8px">
         <select name="days" class="form-input">
             <option value="7" {% if days == 7 %}selected{% endif %}>7 дней</option>
@@ -25,7 +25,7 @@
 
 {% for item in analytics_data %}
 <div class="card" id="detail-{{ item.user.id }}" style="margin-bottom:16px">
-    <h3>{{ item.user.full_name or item.user.username }}</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">{{ item.user.full_name or item.user.username }}</h3>
     <div class="stats-grid" style="margin-bottom:12px">
         <div class="stat-card">
             <div class="stat-value">{{ item.avg_response_label }}</div>

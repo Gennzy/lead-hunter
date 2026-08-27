@@ -3,7 +3,7 @@ import logging
 import re
 import aiohttp
 from typing import Optional
-from .base import BaseScraper, ScrapedLead
+from .base import BaseScraper, ScrapedLead, retry_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class ForumHouseScraper(BaseScraper):
         self.base_url = "https://www.forumhouse.ru"
         self.search_url = f"{self.base_url}/search/"
 
+    @retry_on_error(max_retries=2, backoff=3)
     async def search(self, query: str, city: str = "", limit: int = 50) -> list[ScrapedLead]:
         """Search ForumHouse for renovation discussions."""
         leads = []
@@ -63,9 +64,11 @@ class ForumHouseScraper(BaseScraper):
 
         except Exception as e:
             self.logger.error("ForumHouse search failed: %s", e)
+            self.log_error(str(e))
 
         return leads[:limit]
 
+    @retry_on_error(max_retries=2, backoff=3)
     async def monitor(self, queries: list[str], cities: list[str] = None) -> list[ScrapedLead]:
         """Monitor ForumHouse for renovation discussions."""
         all_leads = []

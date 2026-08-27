@@ -2,7 +2,7 @@
 {% block title %}Источники лидов — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>Источники лидов</h1>
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Источники лидов</h1>
     <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Добавить источник</button>
 </div>
 
@@ -12,9 +12,10 @@
             <thead>
                 <tr>
                     <th>Источник</th>
+                    <th>Город</th>
                     <th>Статус</th>
-                    <th>Найдено лидов</th>
-                    <th>Последний синк</th>
+                    <th>Лидов</th>
+                    <th>Синк</th>
                     <th></th>
                 </tr>
             </thead>
@@ -23,8 +24,11 @@
                 <tr>
                     <td>
                         <strong>{{ s.display_name or s.name }}</strong>
-                        <div style="font-size:11px;color:var(--text-muted)">{{ s.name }}</div>
+                        <div style="font-size:11px;color:var(--text-muted)">
+                            {% if s.name == 'vk' %}ВКонтакте{% elif s.name == 'avito' %}Avito{% elif s.name == 'cian' %}ЦИАН{% elif s.name == 'forumhouse' %}ForumHouse{% endif %}
+                        </div>
                     </td>
+                    <td>{{ s.config.get('city', '—') if s.config else '—' }}</td>
                     <td>
                         {% if s.is_active %}
                         <span class="badge badge-success">Активен</span>
@@ -33,11 +37,28 @@
                         {% endif %}
                     </td>
                     <td>{{ s.leads_found or 0 }}</td>
-                    <td>{{ (s.last_synced|msk).strftime('%d.%m %H:%M') if s.last_synced else '—' }}</td>
-                    <td>
+                    <td style="font-size:12px">
+                        {% if s.last_synced %}
+                            {% set mins_ago = ((now - s.last_synced).total_seconds() / 60)|int if now else 0 %}
+                            {% if mins_ago < 5 %}
+                            <span style="color:var(--success)">{{ (s.last_synced|msk).strftime('%H:%M') }}</span>
+                            {% elif mins_ago < 30 %}
+                            <span style="color:var(--text-secondary)">{{ (s.last_synced|msk).strftime('%H:%M') }}</span>
+                            {% else %}
+                            <span style="color:var(--text-muted)">{{ (s.last_synced|msk).strftime('%d.%m %H:%M') }}</span>
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td style="white-space:nowrap">
                         <form method="post" action="/sources/{{ s.id }}/toggle" style="display:inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="btn btn-sm btn-outline">{{ 'Выкл' if s.is_active else 'Вкл' }}</button>
+                        </form>
+                        <form method="post" action="/sources/{{ s.id }}/test" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm btn-outline">Тест</button>
                         </form>
                         <form method="post" action="/sources/{{ s.id }}/delete" style="display:inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -47,26 +68,73 @@
                 </tr>
                 {% endfor %}
                 {% if not sources %}
-                <tr><td colspan="5" class="empty-state">Нет источников. Добавьте первый источник для поиска лидов.</td></tr>
+                <tr><td colspan="6" class="empty-state">Нет источников. Нажмите «Добавить источник» чтобы начать.</td></tr>
                 {% endif %}
             </tbody>
         </table>
     </div>
 </div>
 
+{% if chat_suggestions %}
 <div class="card" style="margin-top:16px">
-    <h3>Как это работает</h3>
-    <ul style="font-size:13px;line-height:1.8;color:var(--text-secondary)">
-        <li><strong>VK</strong> — мониторинг групп по ремонту, поиск посты с ключевыми словами</li>
-        <li><strong>Avito</strong> — поиск объявлений "ищу бригаду", "нужен ремонт"</li>
-        <li><strong>CIAN</strong> — новые покупатели квартир без отделки (нужен ремонт)</li>
-        <li><strong>ForumHouse</strong> — обсуждения на строительных форумах</li>
-    </ul>
-    <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Скраперы запускаются автоматически каждые 30 минут.</p>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:4px">Найденные ЖК-чаты Telegram</h3>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+        Автопоиск находит публичные чаты новостроек по вашему городу. Добавьте подходящие в мониторинг —
+        новый чат начнёт отслеживаться автоматически.
+    </p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Чат</th>
+                    <th>Участников</th>
+                    <th>Запрос</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in chat_suggestions %}
+                <tr id="sug-{{ c.id }}">
+                    <td>
+                        <a href="https://t.me/{{ c.username }}" target="_blank" style="color:var(--primary);text-decoration:none;font-weight:500">{{ c.title }}</a>
+                        <div style="font-size:11px;color:var(--text-muted)">@{{ c.username }}</div>
+                    </td>
+                    <td>{{ c.members_count }}</td>
+                    <td style="font-size:12px;color:var(--text-muted)">{{ c.match_query }}</td>
+                    <td style="white-space:nowrap">
+                        <button class="btn btn-sm btn-primary" onclick="chatSuggestion({{ c.id }}, 'approve', this)">Добавить</button>
+                        <button class="btn btn-sm btn-outline" onclick="chatSuggestion({{ c.id }}, 'reject', this)">Скрыть</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
+<script>
+async function chatSuggestion(id, action, btn){
+    btn.disabled = true;
+    try {
+        var r = await fetch('/api/chat-suggestions/' + id + '/' + action, {method: 'POST'});
+        var row = document.getElementById('sug-' + id);
+        if (r.ok) {
+            var data = await r.json();
+            if (action === 'approve') {
+                if (row) { row.style.opacity = '.5'; btn.textContent = 'Добавлен ✓'; }
+            } else {
+                if (row) row.remove();
+            }
+        } else {
+            btn.disabled = false;
+        }
+    } catch(e) { btn.disabled = false; }
+}
+</script>
+{% endif %}
+
 <div id="addModal" class="modal" style="display:none">
-    <div class="modal-content" style="max-width:600px">
+    <div class="modal-content" style="max-width:500px">
         <div class="modal-header">
             <h3>Добавить источник</h3>
             <button class="modal-close" onclick="document.getElementById('addModal').style.display='none'">&times;</button>
@@ -77,61 +145,43 @@
             <div class="form-group">
                 <label>Тип источника *</label>
                 <select name="name" id="sourceType" onchange="toggleSourceFields()" required>
-                    <option value="vk">VK (ВКонтакте)</option>
                     <option value="avito">Avito</option>
-                    <option value="cian">CIAN</option>
+                    <option value="vk">VK (ВКонтакте)</option>
+                    <option value="cian">ЦИАН</option>
                     <option value="forumhouse">ForumHouse</option>
                 </select>
             </div>
 
-            <div class="form-group">
-                <label>Название</label>
-                <input type="text" name="display_name" placeholder="Мой VK мониторинг">
+            <div class="form-group" id="cityGroup">
+                <label>Город *</label>
+                <input type="text" name="city" id="sourceCity" placeholder="Москва" required list="citiesList">
+                <datalist id="citiesList">
+                    {% for city in cities %}
+                    <option value="{{ city }}">
+                    {% endfor %}
+                </datalist>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:4px">На русском языке</div>
             </div>
 
-            <!-- VK fields -->
-            <div id="vkFields">
+            <div id="vkFields" style="display:none">
                 <div class="form-group">
                     <label>Access Token VK</label>
-                    <input type="text" name="vk_token" placeholder="VK API token">
-                </div>
-                <div class="form-group">
-                    <label>ID групп (через запятую)</label>
-                    <input type="text" name="vk_groups" placeholder="12345678, 87654321">
+                    <input type="text" name="vk_token" placeholder="Опционально">
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Если не указан, поиск по общим новостям</div>
                 </div>
             </div>
 
-            <!-- Avito fields -->
-            <div id="avitoFields" style="display:none">
+            <div id="proxyField" style="display:none">
                 <div class="form-group">
-                    <label>Город</label>
-                    <input type="text" name="avito_city" placeholder="moskva">
-                </div>
-            </div>
-
-            <!-- CIAN fields -->
-            <div id="cianFields" style="display:none">
-                <div class="form-group">
-                    <label>API Key CIAN</label>
-                    <input type="text" name="cian_api_key" placeholder="CIAN API key">
-                </div>
-                <div class="form-group">
-                    <label>Город</label>
-                    <input type="text" name="cian_city" placeholder="moscow">
-                </div>
-            </div>
-
-            <!-- ForumHouse fields -->
-            <div id="forumhouseFields" style="display:none">
-                <div class="form-group">
-                    <label>Разделы (через запятую)</label>
-                    <input type="text" name="forumhouse_sections" placeholder="remont-i-otdelka, stroitelstvo">
+                    <label>Прокси (опционально)</label>
+                    <input type="text" name="proxy" placeholder="http://user:pass@host:port">
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Российский резидентный прокси для обхода блокировок</div>
                 </div>
             </div>
 
             <div class="form-actions">
                 <button type="button" class="btn btn-outline" onclick="document.getElementById('addModal').style.display='none'">Отмена</button>
-                <button type="submit" class="btn btn-primary">Добавить</button>
+                <button type="submit" class="btn btn-primary">Включить</button>
             </div>
         </form>
     </div>
@@ -141,9 +191,19 @@
 function toggleSourceFields() {
     var type = document.getElementById('sourceType').value;
     document.getElementById('vkFields').style.display = type === 'vk' ? 'block' : 'none';
-    document.getElementById('avitoFields').style.display = type === 'avito' ? 'block' : 'none';
-    document.getElementById('cianFields').style.display = type === 'cian' ? 'block' : 'none';
-    document.getElementById('forumhouseFields').style.display = type === 'forumhouse' ? 'block' : 'none';
+    document.getElementById('proxyField').style.display = type === 'avito' ? 'block' : 'none';
+    var cityGroup = document.getElementById('cityGroup');
+    var cityInput = document.getElementById('sourceCity');
+    if (type === 'forumhouse') {
+        cityGroup.style.display = 'none';
+        cityInput.removeAttribute('required');
+        cityInput.disabled = true;
+    } else {
+        cityGroup.style.display = 'block';
+        cityInput.required = true;
+        cityInput.disabled = false;
+    }
 }
+toggleSourceFields();
 </script>
 {% endblock %}

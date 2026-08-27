@@ -1,8 +1,91 @@
 {% extends "base.html" %}
 {% block title %}Аналитика — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Аналитика</h1>
-<p class="subtitle">Статистика и конверсия лидов</p>
+<style>
+.bar-chart { display: flex; gap: 8px; align-items: flex-end; height: 150px; padding: 0 10px; }
+.bar-chart .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.bar-chart .bar { width: 100%; border-radius: 4px 4px 0 0; background: var(--primary); transition: height .3s; min-height: 2px; }
+.bar-chart .bar-label { font-size: 11px; color: var(--text-muted); }
+.bar-chart .bar-value { font-size: 12px; font-weight: 600; }
+</style>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Аналитика</h1>
+        <p style="font-size:13px;color:var(--text-muted)">Статистика и конверсия лидов</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select onchange="window.location.href='/analytics?days='+this.value" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg-input);color:var(--text)">
+            <option value="7" {% if days == 7 %}selected{% endif %}>За 7 дней</option>
+            <option value="30" {% if days == 30 or not days %}selected{% endif %}>За 30 дней</option>
+            <option value="90" {% if days == 90 %}selected{% endif %}>За 90 дней</option>
+            <option value="365" {% if days == 365 %}selected{% endif %}>За год</option>
+        </select>
+        <a href="/analytics/export/csv?days={{ days }}" class="btn btn-outline btn-sm">CSV</a>
+        <a href="/analytics/pdf" class="btn btn-outline btn-sm" target="_blank">📄 PDF</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Сравнение периодов</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Эта неделя vs прошлая неделя</p>
+    <div class="stats-grid" style="margin-bottom:0">
+        <div class="stat-card primary">
+            <div class="stat-number">
+                {{ this_week_leads }}
+                {% if last_week_leads > 0 %}
+                    {% set change = ((this_week_leads - last_week_leads) / last_week_leads * 100)|round(1) %}
+                    <span style="font-size:13px;font-weight:400;color:{% if change >= 0 %}var(--success){% else %}var(--danger){% endif %}">
+                        {% if change >= 0 %}▲{% else %}▼{% endif %} {{ change|abs }}%
+                    </span>
+                {% endif %}
+            </div>
+            <div class="stat-label">Лидов за неделю</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Прошлая: {{ last_week_leads }}</div>
+        </div>
+        <div class="stat-card danger">
+            <div class="stat-number">
+                {{ this_week_deals }}
+                {% if last_week_deals > 0 %}
+                    {% set change = ((this_week_deals - last_week_deals) / last_week_deals * 100)|round(1) %}
+                    <span style="font-size:13px;font-weight:400;color:{% if change >= 0 %}var(--success){% else %}var(--danger){% endif %}">
+                        {% if change >= 0 %}▲{% else %}▼{% endif %} {{ change|abs }}%
+                    </span>
+                {% endif %}
+            </div>
+            <div class="stat-label">Сделок за неделю</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Прошлая: {{ last_week_deals }}</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-number">
+                {{ this_week_avg_score }}
+                {% if last_week_avg_score > 0 %}
+                    {% set change = (this_week_avg_score - last_week_avg_score)|round(1) %}
+                    <span style="font-size:13px;font-weight:400;color:{% if change >= 0 %}var(--success){% else %}var(--danger){% endif %}">
+                        {% if change >= 0 %}▲{% else %}▼{% endif %} {{ change|abs }}
+                    </span>
+                {% endif %}
+            </div>
+            <div class="stat-label">Средний Score</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Прошлая: {{ last_week_avg_score }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Лиды за неделю</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Количество лидов по дням за последние 7 дней</p>
+    {% set max_day_count = leads_by_day|map(attribute=1)|max if leads_by_day else 1 %}
+    <div class="bar-chart">
+        {% for date_label, count in leads_by_day %}
+        <div class="bar-col">
+            <div class="bar-value">{{ count }}</div>
+            <div class="bar" style="height:{{ (count / max_day_count * 120) if max_day_count > 0 else 0 }}px"></div>
+            <div class="bar-label">{{ date_label }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
 
 <div class="stats-grid">
     <div class="stat-card primary">
@@ -29,7 +112,7 @@
 </div>
 
 <div class="card" style="margin-bottom:20px">
-    <h3>Воронка продаж</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Воронка продаж</h3>
     <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">Конверсия на каждом этапе воронки</p>
     <div style="display:flex;gap:8px;align-items:end;height:200px;padding:0 10px">
         {% set funnel_labels = {'new': 'Новые', 'contacted': 'Контакт', 'interested': 'Заинтересованы', 'deal': 'Сделки'} %}
@@ -48,8 +131,80 @@
     </div>
 </div>
 
+{% if prediction_stats %}
 <div class="card" style="margin-bottom:20px">
-    <h3>Отчёт по источникам</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">🎯 Прогноз конверсии</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">ML-модель предсказывает вероятность сделки</p>
+    <div class="stats-grid">
+        <div class="stat-card success">
+            <div class="stat-number">{{ prediction_stats.high_probability }}</div>
+            <div class="stat-label">Высокая (>70%)</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-number">{{ prediction_stats.medium_probability }}</div>
+            <div class="stat-label">Средняя (40-70%)</div>
+        </div>
+        <div class="stat-card danger">
+            <div class="stat-number">{{ prediction_stats.low_probability }}</div>
+            <div class="stat-label">Низкая (<40%)</div>
+        </div>
+        <div class="stat-card primary">
+            <div class="stat-number">{{ prediction_stats.avg_probability }}%</div>
+            <div class="stat-label">Средний прогноз</div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if hotness_stats %}
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">🌡️ Распределение лидов по горячести</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">AI-классификация лидов по приоритету</p>
+    <div class="stats-grid">
+        <div class="stat-card danger">
+            <div class="stat-number">{{ hotness_stats.hot }}</div>
+            <div class="stat-label">Горячие</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="stat-number">{{ hotness_stats.warm }}</div>
+            <div class="stat-label">Тёплые</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">{{ hotness_stats.cold }}</div>
+            <div class="stat-label">Холодные</div>
+        </div>
+        <div class="stat-card primary">
+            <div class="stat-number">{{ hotness_stats.total }}</div>
+            <div class="stat-label">Всего лидов</div>
+        </div>
+    </div>
+    <div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-top:14px">
+        {% if hotness_stats.total > 0 %}
+        <div style="width:{{ (hotness_stats.hot / hotness_stats.total * 100)|round(1) }}%;background:var(--danger)" title="Горячие"></div>
+        <div style="width:{{ (hotness_stats.warm / hotness_stats.total * 100)|round(1) }}%;background:var(--warning)" title="Тёплые"></div>
+        <div style="width:{{ (hotness_stats.cold / hotness_stats.total * 100)|round(1) }}%;background:var(--border)" title="Холодные"></div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if feedback_data and feedback_data.reason_counts %}
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Причины отказов</h3>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Почему лиды отклоняются</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+        {% for reason, count in feedback_data.reason_counts.items()|sort(attribute='1', reverse=True) %}
+        <div style="display:flex;align-items:center;gap:8px;background:var(--bg-secondary);padding:8px 14px;border-radius:8px;border-left:3px solid var(--danger)">
+            <span style="font-size:14px;font-weight:600;color:var(--danger)">{{ count }}</span>
+            <span style="font-size:13px;color:var(--text)">{{ reason }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Отчёт по источникам</h3>
     <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px">Какие чаты приносят лучшие лиды</p>
     <div class="table-wrap">
         <table class="data-table">
@@ -60,6 +215,7 @@
                     <th style="text-align:right">Сделок</th>
                     <th style="text-align:right">Ср. Score</th>
                     <th style="text-align:right">Конверсия</th>
+                    <th style="text-align:right">Выручка</th>
                 </tr>
             </thead>
             <tbody>
@@ -74,10 +230,13 @@
                             {{ s.conversion }}%
                         </span>
                     </td>
+                    <td style="text-align:right;font-weight:600;color:var(--success)">
+                        {% if s.revenue %}{{ "{:,.0f}".format(s.revenue|int) }} ₽{% else %}—{% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
                 {% if not source_data %}
-                <tr><td colspan="5" class="empty-state">Нет данных</td></tr>
+                <tr><td colspan="6" class="empty-state">Нет данных</td></tr>
                 {% endif %}
             </tbody>
         </table>
@@ -86,7 +245,7 @@
 
 <div class="grid-2">
     <div class="card">
-        <h3>Лиды по чатам</h3>
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Лиды по чатам</h3>
         <table class="data-table">
             <thead>
                 <tr>
@@ -111,7 +270,7 @@
     </div>
 
     <div class="card">
-        <h3>Конверсия по статусам</h3>
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Конверсия по статусам</h3>
         <div class="conversion-chart">
             {% set status_labels = {'new': 'Новые', 'contacted': 'Контакт', 'interested': 'Заинтересованы', 'not_interested': 'Не интересуют', 'deal': 'Сделки', 'archive': 'Архив'} %}
             {% for status, count in by_status %}
@@ -129,7 +288,7 @@
 
 {% if feedback_data and feedback_data.total_feedback > 0 %}
 <div class="card" style="margin-top:20px">
-    <h3>Self-learning: Анализ обратной связи</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Self-learning: Анализ обратной связи</h3>
     <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Автоматический анализ фидбека для улучшения скоринга</p>
     
     <div class="stats-grid" style="margin-bottom:16px">

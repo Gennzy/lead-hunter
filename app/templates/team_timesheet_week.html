@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Табель за неделю — Lead Hunter{% endblock %}
+{% block content %}
+<div class="page-toolbar">
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Табель за неделю</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+        <a href="/team/timesheet/week?date={{ prev_week }}" class="btn btn-outline btn-sm">← Пред.</a>
+        <a href="/team/timesheet/week" class="btn btn-outline btn-sm">Текущая</a>
+        <a href="/team/timesheet/week?date={{ next_week }}" class="btn btn-outline btn-sm">След. →</a>
+        <a href="/team/timesheet" class="btn btn-outline btn-sm">По дням</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Сотрудник</th>
+                    {% for d in week_days %}<th style="text-align:center">{{ d.strftime('%d.%m') }}</th>{% endfor %}
+                    <th style="text-align:center">Итого</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for g in week_data %}
+                <tr>
+                    <td style="font-weight:600">{{ g.user.full_name or g.user.username }}</td>
+                    {% for h in g.hours %}
+                    <td style="text-align:center;{{ 'color:var(--success);font-weight:600' if h >= 8 else ('color:var(--text-muted)' if h == 0 else '') }}">{{ h if h else '—' }}</td>
+                    {% endfor %}
+                    <td style="text-align:center;font-weight:700">{{ g.total|round(1) }}ч</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9" class="empty-state">Нет данных за неделю</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

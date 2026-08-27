@@ -1,3 +1,4 @@
+import asyncio
 import html
 import json
 import logging
@@ -5,6 +6,7 @@ import re
 import random
 import time
 from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select, update
 from app.models import Lead, Tenant, async_session
@@ -18,7 +20,29 @@ bot = Bot(token=settings.bot_token)
 dp = Dispatcher()
 
 # Pending link verifications: {chat_id: {"username": str, "code": str, "expires": float}}
+# File-backed so codes survive service restarts (TTL 5 min anyway).
+from pathlib import Path as _Path
+_LINK_FILE = _Path(__file__).resolve().parent.parent / "pending_links.json"
 _pending_links: dict[int, dict] = {}
+
+
+def _load_links():
+    global _pending_links
+    try:
+        if _LINK_FILE.exists():
+            _pending_links = {int(k): v for k, v in json.loads(_LINK_FILE.read_text()).items()}
+    except Exception:
+        _pending_links = {}
+
+
+def _save_links():
+    try:
+        _LINK_FILE.write_text(json.dumps(_pending_links, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+_load_links()
 
 
 def _cleanup_pending_links():
@@ -27,6 +51,8 @@ def _cleanup_pending_links():
     expired = [cid for cid, data in _pending_links.items() if now >= data["expires"]]
     for cid in expired:
         del _pending_links[cid]
+    if expired:
+        _save_links()
 
 
 async def _get_tenant_config(tenant_id: int | None) -> TenantConfig:
@@ -216,19 +242,82 @@ def _lead_keyboard(lead: Lead, is_manager: bool = False) -> InlineKeyboardMarkup
 _notification_timestamps = []
 NOTIFICATION_RATE_LIMIT = 5
 NOTIFICATION_RATE_WINDOW = 60
+_notification_queue: "asyncio.Queue" = None
+
+
+async def _rate_gate():
+    """Wait for a free rate-limit slot (never skips)."""
+    import time as _time
+    while True:
+        now = _time.time()
+        _notification_timestamps[:] = [t for t in _notification_timestamps if now - t < NOTIFICATION_RATE_WINDOW]
+        if len(_notification_timestamps) < NOTIFICATION_RATE_LIMIT:
+            _notification_timestamps.append(_time.time())
+            return
+        await asyncio.sleep(2)
+
+
+async def notification_worker():
+    """Background queue: delivers lead notifications with retry, never drops them."""
+    global _notification_queue
+    _notification_queue = asyncio.Queue()
+    while True:
+        lead_id = await _notification_queue.get()
+        try:
+            async with async_session() as session:
+                lead = (await session.execute(
+                    select(Lead).where(Lead.id == lead_id)
+                )).scalar_one_or_none()
+            if lead and not lead.is_notified:
+                # Quiet hours: hold non-urgent notifications until morning
+                try:
+                    tc = await _get_tenant_config(lead.tenant_id)
+                    qs_ = int(tc._config.get("quiet_hours_start", 23))
+                    qe_ = int(tc._config.get("quiet_hours_end", 8))
+                    hour = utcnow().hour
+                    in_quiet = (hour >= qs_ or hour < qe_) if qs_ > qe_ else (qs_ <= hour < qe_)
+                    if in_quiet and lead.urgency != "high":
+                        # sleep until quiet window ends (cap 9h)
+                        wait_h = (qe_ - hour) % 24 or 24 - (hour - qe_) % 24
+                        logger.info("Quiet hours: holding lead %s for ~%.1fh", lead.id, wait_h)
+                        await asyncio.sleep(min(wait_h, 9) * 3600)
+                except Exception:
+                    pass
+                for attempt in range(3):
+                    try:
+                        await _rate_gate()
+                        await _send_lead_notification_now(lead)
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.warning("Notification attempt %d failed for lead %s: %s",
+                                       attempt + 1, lead_id, e)
+                        await asyncio.sleep(5 * (attempt + 1))
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("Notification worker error for lead %s: %s", lead_id, e)
+        finally:
+            _notification_queue.task_done()
+
 
 async def send_lead_notification(lead: Lead):
+    """Enqueue notification for guaranteed delivery."""
+    try:
+        if _notification_queue is None:
+            await _send_lead_notification_now(lead)
+            return
+        await _notification_queue.put(lead.id)
+    except Exception:
+        logger.exception("Failed to enqueue notification for lead %d", lead.id)
+
+
+async def _send_lead_notification_now(lead: Lead):
     try:
         import asyncio, time
         now = time.time()
         _notification_timestamps[:] = [t for t in _notification_timestamps if now - t < NOTIFICATION_RATE_WINDOW]
-        if len(_notification_timestamps) >= NOTIFICATION_RATE_LIMIT:
-            logger.warning("Notification rate limit reached, delaying lead %d", lead.id)
-            await asyncio.sleep(3)
-            _notification_timestamps[:] = [t for t in _notification_timestamps if time.time() - t < NOTIFICATION_RATE_WINDOW]
-            if len(_notification_timestamps) >= NOTIFICATION_RATE_LIMIT:
-                logger.error("Notification rate limit still exceeded, skipping lead %d", lead.id)
-                return
 
         _notification_timestamps.append(time.time())
 
@@ -365,15 +454,34 @@ async def _update_lead_status(lead_id: int, new_status: str, callback: CallbackQ
         lead.status = new_status
         if new_status == "contacted" and old_status == "new":
             lead.last_responded_at = utcnow()
+        from app.models import User
+        actor_id = None
+        user_result = await session.execute(
+            select(User).where(User.telegram_id == callback.from_user.id)
+        )
+        actor = user_result.scalar_one_or_none()
+        if actor:
+            actor_id = actor.id
         await ActionLogRepository(session, lead.tenant_id).log(
-            None, "status_change", lead_id=lead_id,
+            actor_id, "status_change", lead_id=lead_id,
             meta={"from": old_status, "to": new_status, "via": "telegram_bot"},
         )
         await session.commit()
     await callback.answer(label)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text(callback.message.text + f"\n\n<b>{label}</b>", parse_mode="HTML")
+    await _append_status_line(callback, label)
     return True
+
+
+async def _append_status_line(callback: CallbackQuery, line: str):
+    """edit_text fails on media messages — fall back to replying."""
+    try:
+        await callback.message.edit_text(callback.message.text + "\n\n<b>" + line + "</b>", parse_mode="HTML")
+    except Exception:
+        try:
+            await callback.message.answer("<b>" + line + "</b>", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @dp.callback_query(F.data.startswith("take_lead:"))
@@ -407,7 +515,7 @@ async def cb_take_lead(callback: CallbackQuery):
         await session.commit()
     await callback.answer("Лид взят!", show_alert=True)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text(callback.message.text + "\n\n<b>Лид взят менеджером</b>", parse_mode="HTML")
+    await _append_status_line(callback, "Лид взят менеджером")
 
 
 @dp.callback_query(F.data.startswith("contacted:"))
@@ -680,6 +788,63 @@ async def btn_link(message):
     await cmd_link(message)
 
 
+@dp.message(Command("help"))
+async def cmd_help(message):
+    await btn_help(message)
+
+
+@dp.message(Command("teamstats"))
+async def cmd_teamstats(message):
+    """Owner/admin digest: per-manager funnel and response speed."""
+    from app.models import User
+    from datetime import timedelta
+    from sqlalchemy import func
+    tg_id = message.from_user.id
+    async with async_session() as session:
+        me = (await session.execute(
+            select(User).where(User.telegram_id == tg_id)
+        )).scalar_one_or_none()
+        if not me or me.role not in ("super_admin", "admin"):
+            await message.answer("❌ Команда доступна только владельцу/админу")
+            return
+        tenant_id = me.tenant_id
+        week_ago = utcnow() - timedelta(days=7)
+        managers = (await session.execute(
+            select(User).where(User.tenant_id == tenant_id,
+                               User.role.in_(["admin", "manager"]),
+                               User.is_active == True)
+        )).scalars().all()
+        rows = []
+        for m in managers:
+            active = (await session.execute(
+                select(func.count(Lead.id)).where(
+                    Lead.tenant_id == tenant_id, Lead.assigned_to == m.id,
+                    Lead.status.notin_(["deleted", "archive"]))
+            )).scalar() or 0
+            new_cnt = (await session.execute(
+                select(func.count(Lead.id)).where(
+                    Lead.tenant_id == tenant_id, Lead.assigned_to == m.id,
+                    Lead.status == "new", Lead.created_at >= week_ago)
+            )).scalar() or 0
+            deals = (await session.execute(
+                select(func.count(Lead.id)).where(
+                    Lead.tenant_id == tenant_id, Lead.assigned_to == m.id,
+                    Lead.status == "deal", Lead.created_at >= week_ago)
+            )).scalar() or 0
+            rows.append((m, active, new_cnt, deals))
+
+    if not rows:
+        await message.answer("Нет менеджеров")
+        return
+    lines = ["📊 <b>Статистика команды (7 дней)</b>\n"]
+    for m, active, new_cnt, deals in rows:
+        lines.append(
+            f"• <b>{m.full_name or m.username}</b>\n"
+            f"  В работе: {active} · Новых за неделю: {new_cnt} · Сделок: {deals}"
+        )
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @dp.message(F.text == "Помощь")
 async def btn_help(message):
     await message.answer(
@@ -822,6 +987,12 @@ async def cmd_lead(message):
             await message.answer("❌ Нет доступа к этому лиду. Используйте /link")
             return
 
+        await ActionLogRepository(session, lead.tenant_id).log(
+            user.id, "lead_view", lead_id=lead_id,
+            meta={"via": "telegram_bot"},
+        )
+        await session.commit()
+
     icon = {"high": "🔥", "medium": "⚡", "low": "💤"}.get(lead.urgency, "")
     text = (
         f"👤 <b>Лид #{lead.id}</b>\n\n"
@@ -941,6 +1112,7 @@ async def cmd_link(message):
                 "code": code,
                 "expires": time.time() + 300,  # 5 minutes
             }
+            _save_links()
 
             # Send code to owner
             if settings.owner_chat_id:
@@ -1395,7 +1567,7 @@ async def send_reminder_notification(chat_id: int, message: str):
 async def check_and_send_reminders():
     """Check all tenants for unprocessed leads and send reminders."""
     from datetime import datetime, timedelta
-    from app.models import Tenant, User, Lead
+    from app.models import Tenant, User, Lead, LeadHistory, MessageTemplate
     from app.repositories import UserRepository
     from sqlalchemy import select, func
     import asyncio
@@ -1474,33 +1646,175 @@ async def check_and_send_reminders():
                         )
                         await send_reminder_notification(target_chat, text)
 
-                # Follow-up reminders: contacted/in_progress leads without response
-                followup_q = select(Lead).where(
-                    Lead.tenant_id == tenant.id,
-                    Lead.status.in_(["contacted", "in_progress"]),
-                    Lead.assigned_to.isnot(None),
-                    Lead.last_responded_at.isnot(None),
-                    Lead.last_responded_at <= utcnow() - timedelta(hours=24),
-                )
-                followup_leads = (await session.execute(followup_q)).scalars().all()
+                # Follow-up chain: contacted/in_progress leads without response
+                followup_hours = tc._config.get("followup_hours", 24)
+                stage2_days = tc._config.get("followup_stage2_days", 3)
+                followup_enabled = tc._config.get("followup_enabled", True)
 
-                for lead in followup_leads[:3]:
-                    assignee = manager_map.get(lead.assigned_to)
-                    if not assignee or not assignee.telegram_id:
-                        continue
-                    hours_since = (utcnow() - lead.last_responded_at).total_seconds() / 3600
-                    text = (
-                        f"🔄 <b>Follow-up напоминание</b>\n\n"
-                        f"Лид <a href=\"{settings.get_site_url()}/leads/{lead.id}\">#{lead.id}</a> "
-                        f"без ответа {hours_since:.0f} ч.\n"
-                        f"Score: {int(lead.lead_score)} | {lead.chat_title[:40]}\n\n"
-                        f"Напишите клиенту или запланируйте повторный звонок."
+                if followup_enabled:
+                    followup_q = select(Lead).where(
+                        Lead.tenant_id == tenant.id,
+                        Lead.status.in_(["contacted", "in_progress"]),
+                        Lead.assigned_to.isnot(None),
+                        Lead.last_responded_at.isnot(None),
+                        Lead.last_responded_at <= utcnow() - timedelta(hours=followup_hours),
                     )
-                    await send_reminder_notification(assignee.telegram_id, text)
+                    followup_leads = (await session.execute(followup_q)).scalars().all()
+
+                    # Dedupe: skip leads reminded recently (checker runs every 30 min)
+                    hist_cutoff = utcnow() - timedelta(hours=max(followup_hours, 20))
+                    hist_rows = (await session.execute(
+                        select(LeadHistory.lead_id).where(
+                            LeadHistory.tenant_id == tenant.id,
+                            LeadHistory.action == "followup_sent",
+                            LeadHistory.created_at >= hist_cutoff,
+                        )
+                    )).fetchall()
+                    sent_ids = {r[0] for r in hist_rows}
+
+                    stage2_template = None
+                    if stage2_days > 0:
+                        stage2_template = (await session.execute(
+                            select(MessageTemplate).where(
+                                MessageTemplate.tenant_id == tenant.id,
+                                MessageTemplate.category == "follow_up",
+                                MessageTemplate.is_active == True,
+                            ).order_by(MessageTemplate.use_count.desc()).limit(1)
+                        )).scalars().first()
+
+                    for lead in followup_leads[:5]:
+                        if lead.id in sent_ids:
+                            continue
+                        assignee = manager_map.get(lead.assigned_to)
+                        if not assignee or not assignee.telegram_id:
+                            continue
+                        hours_since = (utcnow() - lead.last_responded_at).total_seconds() / 3600
+
+                        text = (
+                            f"🔄 <b>Follow-up напоминание</b>\n\n"
+                            f"Лид <a href=\"{settings.get_site_url()}/leads/{lead.id}\">#{lead.id}</a> "
+                            f"без ответа {hours_since:.0f} ч.\n"
+                            f"Score: {int(lead.lead_score)} | {lead.chat_title[:40]}\n\n"
+                            f"Напишите клиенту или запланируйте повторный звонок."
+                        )
+
+                        # Stage 2: no answer N days -> attach ready-to-send template
+                        is_stage2 = (stage2_days > 0 and hours_since >= stage2_days * 24
+                                     and stage2_template is not None)
+                        if is_stage2 and stage2_template and stage2_template.body:
+                            text += (
+                                f"\n\n💬 <b>Готовый шаблон №2 (скопируйте клиенту):</b>\n"
+                                f"<code>{stage2_template.body[:800]}</code>"
+                            )
+                            stage2_template.use_count = (stage2_template.use_count or 0) + 1
+
+                        try:
+                            await send_reminder_notification(assignee.telegram_id, text)
+                            session.add(LeadHistory(
+                                lead_id=lead.id, tenant_id=tenant.id, user_id=None,
+                                action="followup_sent",
+                                note=f"stage2" if is_stage2 else "stage1",
+                            ))
+                            await session.commit()
+                        except Exception:
+                            pass
 
             logger.info("Reminders check completed for tenant %d", tenant.id)
         except Exception as e:
             logger.error("Reminder check failed for tenant %d: %s", tenant.id, e)
+
+
+async def send_weekly_reports():
+    """Weekly digest to each tenant owner: leads, conversion, top chat by money,
+    deal amounts, rejection quality."""
+    from datetime import timedelta
+    from app.models import Tenant, Lead, FilterStat
+    from sqlalchemy import select, func, and_, case
+
+    week_ago = utcnow() - timedelta(days=7)
+
+    async with async_session() as session:
+        result = await session.execute(select(Tenant).where(Tenant.is_active == True))
+        tenants = result.scalars().all()
+
+    for tenant in tenants:
+        try:
+            tc = await _get_tenant_config(tenant.id)
+            owner_chat_id = tc.owner_chat_id
+            if not owner_chat_id:
+                continue
+
+            async with async_session() as session:
+                base = [Lead.tenant_id == tenant.id, Lead.created_at >= week_ago]
+
+                new_leads = (await session.execute(
+                    select(func.count(Lead.id)).where(*base)
+                )).scalar() or 0
+
+                engaged = (await session.execute(
+                    select(func.count(Lead.id)).where(*base, Lead.status.in_(
+                        ["contacted", "interested", "in_progress", "deal"]))
+                )).scalar() or 0
+
+                deal_cond = and_(
+                    Lead.tenant_id == tenant.id,
+                    Lead.status == "deal",
+                    func.coalesce(Lead.deal_closed_at, Lead.created_at) >= week_ago,
+                )
+                deals_row = (await session.execute(
+                    select(func.count(Lead.id), func.coalesce(func.sum(Lead.deal_amount), 0))
+                    .where(deal_cond)
+                )).first()
+                deals_count, deals_sum = int(deals_row[0] or 0), float(deals_row[1] or 0)
+
+                top_chat_row = (await session.execute(
+                    select(Lead.chat_title,
+                           func.sum(case((Lead.status == "deal", Lead.deal_amount), else_=None)),
+                           func.count(Lead.id))
+                    .where(*base).group_by(Lead.chat_title)
+                    .order_by(func.sum(case((Lead.status == "deal", Lead.deal_amount), else_=None)).desc(),
+                              func.count(Lead.id).desc())
+                    .limit(1)
+                )).first()
+
+                rej_rows = (await session.execute(
+                    select(FilterStat.source, func.sum(FilterStat.cnt))
+                    .where(FilterStat.day >= week_ago.date(),
+                           FilterStat.tenant_id == tenant.id)
+                    .group_by(FilterStat.source)
+                )).fetchall()
+                rej = {s: int(c or 0) for s, c in rej_rows}
+                rejected_total = sum(rej.values())
+
+            lines = ["📊 <b>Недельный отчёт Lead Hunter</b>\n"]
+            lines.append(f"🆕 Новых лидов: <b>{new_leads}</b>")
+            if new_leads:
+                conv = round(engaged / new_leads * 100)
+                lines.append(f"💬 Взяты в работу: {engaged} ({conv}%)")
+            lines.append(f"🤝 Сделок за неделю: <b>{deals_count}</b>"
+                         + (f" на <b>{deals_sum:,.0f}</b> ₽".replace(",", " ") if deals_sum else ""))
+            if top_chat_row:
+                t_title, t_sum, t_cnt = top_chat_row
+                parts = []
+                if t_sum:
+                    parts.append(f"{float(t_sum):,.0f} ₽".replace(",", " "))
+                parts.append(f"{t_cnt} лид.")
+                lines.append(f"🏆 Топ-чат: {(t_title or '—')[:50]} ({', '.join(parts)})")
+            if rejected_total:
+                lines.append(
+                    f"\n🧹 Отсев мусора за неделю:\n"
+                    f"• Фильтры: {rej.get('keyword', 0)}\n"
+                    f"• LLM-анализ: {rej.get('llm', 0)}\n"
+                    f"• LLM-валидатор: {rej.get('validator', 0)}\n"
+                    f"• Ниже порога: {rej.get('score', 0)}"
+                )
+                total_seen = rejected_total + new_leads
+                if total_seen:
+                    lines.append(f"Автоматически отсеяно {round(rejected_total / total_seen * 100)}% шума")
+
+            await send_reminder_notification(owner_chat_id, "\n".join(lines))
+        except Exception as e:
+            logger.error("Weekly report failed for tenant %s: %s", tenant.id, e)
 
 
 async def auto_assign_leads():

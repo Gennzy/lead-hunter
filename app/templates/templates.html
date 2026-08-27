@@ -2,9 +2,9 @@
 {% block title %}Шаблоны сообщений — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>Шаблоны сообщений</h1>
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Шаблоны сообщений</h1>
     <div style="display:flex;gap:8px">
-        <button onclick="document.getElementById('aiModal').style.display='flex'" class="btn btn-outline">✨ Создать с ИИ</button>
+        <button onclick="document.getElementById('aiModal').style.display='flex'" class="btn btn-outline">Создать с ИИ</button>
         <button onclick="document.getElementById('addModal').style.display='flex'" class="btn btn-primary">+ Создать шаблон</button>
     </div>
 </div>
@@ -52,7 +52,7 @@
 <div id="aiModal" class="modal" style="display:none">
     <div class="modal-content" style="max-width:560px">
         <div class="modal-header">
-            <h3>✨ Создать шаблон с ИИ</h3>
+            <h3>Создать шаблон с ИИ</h3>
             <button class="modal-close" onclick="closeAiModal()">&times;</button>
         </div>
         <div style="padding:20px 24px">
@@ -78,12 +78,12 @@
                 <input id="aiResultName" type="text" placeholder="Название шаблона" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;margin-bottom:8px;box-sizing:border-box">
                 <textarea id="aiResultBody" rows="6" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
                 <div style="display:flex;gap:8px;margin-top:8px">
-                    <button onclick="regenerateAi()" class="btn btn-outline btn-sm">🔄 Генерировать заново</button>
-                    <button onclick="saveAiTemplate()" class="btn btn-primary btn-sm">💾 Сохранить шаблон</button>
+                    <button onclick="regenerateAi()" class="btn btn-outline btn-sm">Генерировать заново</button>
+                    <button onclick="saveAiTemplate()" class="btn btn-primary btn-sm">Сохранить шаблон</button>
                 </div>
             </div>
             <div id="aiLoading" style="display:none;text-align:center;padding:20px">
-                <div style="font-size:24px;margin-bottom:8px">🤖</div>
+                <div style="font-size:24px;margin-bottom:8px"></div>
                 <div style="color:var(--text-muted)">ИИ генерирует шаблон...</div>
             </div>
             <div id="aiError" style="display:none;padding:10px 14px;background:var(--danger-light,#fee2e2);color:var(--danger,#dc2626);border-radius:8px;margin-bottom:12px;font-size:13px"></div>

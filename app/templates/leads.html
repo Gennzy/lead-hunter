@@ -2,10 +2,10 @@
 {% block title %}Лиды — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>Лиды <small>{{ total }}</small></h1>
+    <h1 style="font-size:20px;font-weight:600;margin:0">Лиды <small style="font-size:14px;font-weight:400;color:var(--text-muted)">{{ total }}</small></h1>
     <div style="display:flex;gap:8px;align-items:center">
         <span style="color:var(--text-muted);font-size:12px">{{ new_week }} новых за неделю</span>
-        <a href="/leads/export/csv{% if status_filter %}?status={{ status_filter }}{% endif %}{% if chat_filter %}{% if status_filter %}&{% else %}?{% endif %}chat={{ chat_filter }}{% endif %}{% if search %}{% if status_filter or chat_filter %}&{% else %}?{% endif %}search={{ search }}{% endif %}" class="btn btn-outline btn-sm">📥 CSV</a>
+        <a href="/leads/export/csv{{ ('?' + csv_qs) if csv_qs else '' }}" class="btn btn-outline btn-sm">CSV</a>
         {% if user and user.role != 'viewer' %}
         <a href="/leads/new" class="btn btn-primary">+ Новый лид</a>
         {% endif %}
@@ -22,6 +22,7 @@
 </div>
 
 <div class="filters-bar">
+    <button type="button" class="filter-toggle-btn" onclick="document.getElementById('filtersForm').classList.toggle('open'); this.classList.toggle('active')">Фильтры</button>
     <form method="get" class="filters-form" id="filtersForm">
         <input type="hidden" name="status" value="{{ status_filter }}">
         <select name="chat" onchange="this.form.submit()">
@@ -33,6 +34,29 @@
         <input type="text" name="search" placeholder="Поиск..." value="{{ search }}">
         <input type="date" name="date_from" value="{{ date_from }}" title="От даты">
         <input type="date" name="date_to" value="{{ date_to }}" title="До даты">
+        <input type="number" name="score_min" min="0" max="100" placeholder="Score ≥" value="{{ score_min or '' }}" style="width:84px" title="Минимальный score">
+        <select name="urgency" onchange="this.form.submit()" title="Срочность">
+            <option value="">Срочность: любая</option>
+            <option value="high" {% if urgency_f == 'high' %}selected{% endif %}>🔥 Высокая</option>
+            <option value="medium" {% if urgency_f == 'medium' %}selected{% endif %}>⚡ Средняя</option>
+            <option value="low" {% if urgency_f == 'low' %}selected{% endif %}>💤 Низкая</option>
+        </select>
+        {% if user and user.role in ('admin', 'super_admin') %}
+        <select name="manager" onchange="this.form.submit()" title="Менеджер">
+            <option value="">Все менеджеры</option>
+            <option value="none" {% if manager_f == 'none' %}selected{% endif %}>Без назначенного</option>
+            {% for m in managers_list %}
+            <option value="{{ m.id }}" {% if manager_f == m.id|string %}selected{% endif %}>{{ m.name }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        <select name="noresp" onchange="this.form.submit()" title="Без ответа">
+            <option value="">Ответ: любой</option>
+            <option value="1" {% if noresp == 1 %}selected{% endif %}>Без ответа 1д+</option>
+            <option value="2" {% if noresp == 2 %}selected{% endif %}>Без ответа 2д+</option>
+            <option value="3" {% if noresp == 3 %}selected{% endif %}>Без ответа 3д+</option>
+            <option value="7" {% if noresp == 7 %}selected{% endif %}>Без ответа 7д+</option>
+        </select>
         <select name="sort" onchange="this.form.submit()">
             <option value="">Сортировка</option>
             <option value="score" {% if sort == 'score' %}selected{% endif %}>По Score</option>
@@ -51,6 +75,8 @@
     <select id="bulkAction">
         <option value="new">Новый</option>
         <option value="contacted">Контактировали</option>
+        <option value="in_progress">В работе</option>
+        <option value="missed_call">Недозвон</option>
         <option value="interested">Заинтересован</option>
         <option value="not_interested">Не интересует</option>
         <option value="deal">Сделка</option>
@@ -69,10 +95,10 @@
                 {% if user and user.role != 'viewer' %}
                 <th style="width:40px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"></th>
                 {% endif %}
-                <th><a href="?sort=name&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Имя</a></th>
-                <th><a href="?&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Чат</a></th>
-                <th style="text-align:center"><a href="?sort=score&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Score</a></th>
-                <th><a href="?sort=urgency&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}">Срочность</a></th>
+                <th><a href="?sort=name{% if status_filter %}&status={{ status_filter }}{% endif %}{{ qs_nostatus }}">Имя</a></th>
+                <th><a href="?status={{ status_filter }}{{ qs_nostatus }}">Чат</a></th>
+                <th style="text-align:center"><a href="?sort=score{% if status_filter %}&status={{ status_filter }}{% endif %}{{ qs_nostatus }}">Score</a></th>
+                <th><a href="?sort=urgency{% if status_filter %}&status={{ status_filter }}{% endif %}{{ qs_nostatus }}">Срочность</a></th>
                 <th style="text-align:center">Возраст</th>
                 <th>Статус</th>
                 <th>Сообщение</th>
@@ -100,6 +126,11 @@
                     {% elif lead.user_id %}
                     <div style="font-size:11px"><a href="tg://user?id={{ lead.user_id }}" style="color:var(--primary)">ID: {{ lead.user_id }}</a></div>
                     {% endif %}
+                    {% if repeat_info.get(lead.id) %}
+                    <a href="/leads/{{ repeat_info[lead.id].other_id }}"
+                       class="score-badge" title="Повторный клиент: в системе ещё {{ repeat_info[lead.id].count }} лид(ов) от этого автора"
+                       style="background:#7a9ec2;font-size:9px;padding:1px 5px;margin-left:4px;text-decoration:none">🔁 {{ repeat_info[lead.id].count + 1 }}</a>
+                    {% endif %}
                 </td>
                 <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
                 <td style="text-align:center">
@@ -125,7 +156,8 @@
                     {% if user and user.role != 'viewer' %}
                     <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form" style="display:inline">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <select name="status" onchange="this.form.submit()" style="font-size:11px;padding:3px 6px">
+                        <input type="hidden" name="deal_comment" value="" class="reject-reason-input">
+                        <select name="status" onchange="if(this.value==='not_interested'){var reasons=['Цена не устраивает','Нашёл другого подрядчика','Не готов к ремонту','Не по теме','Спам','Другое'];var r=prompt('Причина:\\n'+reasons.map(function(v,i){return (i+1)+'. '+v}).join('\\n')+'\\n\\nВведите номер или текст:');if(r===null){this.value='{{ lead.status }}';return}if(!r.trim()){alert('Причина обязательна');this.value='{{ lead.status }}';return}this.form.querySelector('.reject-reason-input').value=r}this.form.submit()" style="font-size:11px;padding:3px 6px">
                             <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
                             <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контакт</option>
                             <option value="interested" {% if lead.status == 'interested' %}selected{% endif %}>Заинтересован</option>
@@ -158,8 +190,20 @@
                         {{ lead.message_text[:60] }}{% if lead.message_text|length > 60 %}...{% endif %}
                     </span>
                 </td>
-                <td>
-                    <a href="/leads/{{ lead.id }}" class="btn btn-primary btn-sm" title="Подробнее" style="padding:6px 14px;font-size:13px;text-decoration:none">→</a>
+                <td style="white-space:nowrap">
+                    {% if lead.profile_url() and user and user.role != 'viewer' %}
+                    <a href="{{ lead.profile_url() }}" target="_blank" class="btn btn-sm"
+                       title="Написать в Telegram" onclick="fetch('/leads/{{ lead.id }}/log-write-click').catch(function(){})"
+                       style="background:#5a8f8f;color:#fff;border:none;padding:6px 8px;font-size:12px;text-decoration:none;display:inline-flex;align-items:center;vertical-align:middle">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9.04 15.51l-.38 5.32c.54 0 .78-.23 1.06-.51l2.55-2.44 5.28 3.87c.97.53 1.66.25 1.92-.9L23.9 4.6c.31-1.42-.51-1.98-1.46-1.63L2.9 10.5c-1.39.54-1.37 1.32-.24 1.67l4.69 1.46L19.2 6.8c.51-.34.98-.15.6.19L9.04 15.51z"/></svg>
+                    </a>
+                    {% endif %}
+                    {% if user and user.role != 'viewer' %}
+                    <button type="button" class="btn btn-sm" title="Это не лид"
+                            style="background:#c45a5a;color:#fff;border:none;padding:6px 8px;font-size:12px"
+                            onclick="quickNotLead({{ lead.id }}, this)">✕</button>
+                    {% endif %}
+                    <a href="/leads/{{ lead.id }}" class="btn btn-primary btn-sm" title="Подробнее" style="padding:6px 10px;font-size:13px;text-decoration:none">→</a>
                 </td>
             </tr>
             {% endfor %}
@@ -172,6 +216,62 @@
             {% endif %}
         </tbody>
     </table>
+    <div class="mobile-cards" id="mobileCards">
+        {% for lead in leads %}
+        <a href="/leads/{{ lead.id }}" class="mobile-lead-card">
+            <div class="mobile-lead-header">
+                <div class="mobile-lead-name">
+                    {% if lead.first_name or lead.last_name %}
+                    {{ ((lead.first_name or '') ~ ' ' ~ (lead.last_name or ''))[:25] }}
+                    {% elif lead.username %}
+                    @{{ lead.username[:20] }}
+                    {% elif lead.user_id %}
+                    User #{{ lead.user_id }}
+                    {% else %}—{% endif %}
+                </div>
+                <div class="mobile-lead-badges">
+                    <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
+                    <span class="urgency-badge urgency-{{ lead.urgency }}">
+                        {% if lead.urgency == 'high' %}🔥{% elif lead.urgency == 'medium' %}⚡{% else %}💤{% endif %}
+                    </span>
+                </div>
+            </div>
+            <div class="mobile-lead-meta">
+                <span class="mobile-lead-chat">{{ lead.chat_title[:30] }}</span>
+                <span class="mobile-lead-age">
+                    {% set age_h = ((now - lead.created_at).total_seconds() / 3600) if lead.created_at and now else 0 %}
+                    {% if age_h < 1 %}Новый{% elif age_h < 4 %}{{ age_h|round(0) }}ч{% else %}{{ age_h|round(0) }}ч{% endif %}
+                </span>
+            </div>
+            <div class="mobile-lead-msg">{{ lead.message_text[:80] }}{% if lead.message_text|length > 80 %}...{% endif %}</div>
+            <div class="mobile-lead-footer">
+                {% if user and user.role != 'viewer' %}
+                <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form" onclick="event.stopPropagation()">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="deal_comment" value="" class="reject-reason-input">
+                    <select name="status" onchange="if(this.value==='not_interested'){var reasons=['Цена не устраивает','Нашёл другого подрядчика','Не готов к ремонту','Не по теме','Спам','Другое'];var r=prompt('Причина:\\n'+reasons.map(function(v,i){return (i+1)+'. '+v}).join('\\n')+'\\n\\nВведите номер или текст:');if(r===null){this.value='{{ lead.status }}';return}if(!r.trim()){alert('Причина обязательна');this.value='{{ lead.status }}';return}this.form.querySelector('.reject-reason-input').value=r}this.form.submit()" class="mobile-status-select">
+                        <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
+                        <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контакт</option>
+                        <option value="interested" {% if lead.status == 'interested' %}selected{% endif %}>Заинтересован</option>
+                        <option value="not_interested" {% if lead.status == 'not_interested' %}selected{% endif %}>Не интересует</option>
+                        <option value="deal" {% if lead.status == 'deal' %}selected{% endif %}>Сделка</option>
+                        <option value="archive" {% if lead.status == 'archive' %}selected{% endif %}>Архив</option>
+                        <option value="deleted" {% if lead.status == 'deleted' %}selected{% endif %}>Удалён</option>
+                    </select>
+                </form>
+                {% endif %}
+                <span class="mobile-lead-status status-{{ lead.status }}">{{ lead.status_label() }}</span>
+            </div>
+        </a>
+        {% endfor %}
+        {% if not leads %}
+        <div class="empty-state" style="padding:40px;text-align:center">
+            <div class="empty-state-icon">📋</div>
+            <div style="font-weight:600;margin-bottom:4px">Нет лидов</div>
+            <div style="font-size:12px">Попробуйте изменить фильтры</div>
+        </div>
+        {% endif %}
+    </div>
 </div>
 
 <div class="pagination">
@@ -226,7 +326,7 @@ function openLeadModal(el){
     if(reason)x+='<div class="modal-section modal-reason"><strong>Причина:</strong> '+escapeHtml(reason)+'</div>';
     if(rec)x+='<div class="modal-section modal-rec"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><strong style="color:var(--success)">Рекомендуемое сообщение:</strong><button class="btn btn-sm btn-outline copy-rec-btn" style="font-size:11px;padding:3px 10px">Копировать</button></div><div class="rec-text" style="line-height:1.6">'+escapeHtml(rec)+'</div></div>';
     x+='<div class="modal-actions">';
-    if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" class="btn btn-primary btn-sm">Написать в Telegram</a>';
+    if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" onclick="fetch(\'/leads/'+id+'/log-write-click\',{method:\'POST\'}).catch(function(){})" class="btn btn-primary btn-sm">Написать в Telegram</a>';
     if(!un&&uid)x+='<button onclick="navigator.clipboard.writeText(\''+uid+'\').then(function(){alert(\'ID скопирован: \'+uid)})" class="btn btn-secondary btn-sm">Скопировать ID</button>';
     x+='<a href="/leads/'+id+'" class="btn btn-secondary btn-sm">Подробнее →</a></div>';
     b.innerHTML=x;m.style.display='flex';
@@ -241,5 +341,16 @@ function toggleSelectAll(cb){document.querySelectorAll('.lead-cb').forEach(funct
 function updateBulkToolbar(){var c=document.querySelectorAll('.lead-cb:checked'),t=document.getElementById('bulkToolbar');document.getElementById('bulkCount').textContent=c.length+' выбрано';t.style.display=c.length>0?'flex':'none'}
 function clearSelection(){document.querySelectorAll('.lead-cb').forEach(function(c){c.checked=false});document.getElementById('selectAll').checked=false;updateBulkToolbar()}
 function submitBulk(){var c=document.querySelectorAll('.lead-cb:checked'),ids=[];c.forEach(function(i){ids.push(i.value)});var a=document.getElementById('bulkAction').value;if(a==='delete'&&!confirm('Удалить '+ids.length+' лид(ов)?'))return;document.getElementById('bulkIds').value=ids.join(',');document.getElementById('bulkActionValue').value=a;document.getElementById('bulkForm').submit()}
+async function quickNotLead(id, btn){
+    if (!confirm('Отметить лид #'+id+' как «не лид»?')) return;
+    try {
+        var r = await fetch('/api/leads/'+id+'/not-lead', {method:'POST'});
+        if (r.ok) {
+            var tr = btn.closest('tr');
+            if (tr) tr.remove();
+            var mc = document.querySelector('.mobile-lead-card a[href="/leads/'+id+'"]');
+        } else { alert('Не удалось отметить (нужны права)'); }
+    } catch(e) { alert('Ошибка сети'); }
+}
 </script>
 {% endblock %}

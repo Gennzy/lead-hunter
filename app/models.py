@@ -1,7 +1,8 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, func, Index, Numeric
+    Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, func, Index, Numeric,
+    Date, UniqueConstraint
 )
 from datetime import datetime
 
@@ -97,6 +98,8 @@ class Lead(Base):
         Index("ix_leads_tenant_score", "tenant_id", "lead_score"),
         Index("ix_leads_status", "status"),
         Index("ix_leads_chat_title", "chat_title"),
+        Index("ix_leads_tenant_assignee_status", "tenant_id", "assigned_to", "status"),
+        Index("ix_leads_tenant_responded", "tenant_id", "last_responded_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -202,6 +205,7 @@ class LeadHistory(Base):
     created_at = Column(DateTime, default=func.now())
 
     lead = relationship("Lead", back_populates="history")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class BlacklistedUser(Base):
@@ -599,3 +603,41 @@ class LeadTheftEvidence(Base):
     suspect = relationship("User", backref="theft_evidence", foreign_keys=[suspect_user_id])
     lead = relationship("Lead", backref="theft_evidence")
     penalty = relationship("Penalty", backref="theft_evidence")
+
+
+class FilterStat(Base):
+    """Aggregated counters of rejected messages (false-positive filtering stats)."""
+    __tablename__ = "filter_stats"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "day", "chat_title", "source", "reason",
+                         name="uq_filter_stat_bucket"),
+        Index("ix_filter_stats_tenant_day", "tenant_id", "day"),
+        Index("ix_filter_stats_day_source", "day", "source"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, nullable=True)
+    day = Column(Date, nullable=False)
+    chat_title = Column(String(200), default="", nullable=False)
+    source = Column(String(20), nullable=False)  # keyword | llm | validator | score
+    reason = Column(String(150), default="", nullable=False)
+    cnt = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ChatSuggestion(Base):
+    """Auto-discovered public ЖК chats offered to admin for monitoring."""
+    __tablename__ = "chat_suggestions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "username", name="uq_chat_suggestion_username"),
+        Index("ix_chat_suggestions_tenant_status", "tenant_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    username = Column(String(100), nullable=False)
+    members_count = Column(Integer, default=0)
+    match_query = Column(String(100), default="")
+    status = Column(String(20), default="pending")  # pending | approved | rejected
+    created_at = Column(DateTime, default=func.now())

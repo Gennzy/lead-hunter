@@ -1,8 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<p class="subtitle">Обзор лидов на ремонт квартир <span id="refreshTimer" style="font-size:12px;color:var(--text-muted);margin-left:8px"></span></p>
+{% macro delta_badge(d) %}
+{% if d is not none %}
+<span style="font-size:11px;font-weight:700;color:{{ 'var(--success)' if d >= 0 else 'var(--danger)' }}">{{ '▲ +' if d >= 0 else '▼ −' }}{{ d|abs }}%</span>
+{% endif %}
+{% endmacro %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Dashboard</h1>
+        <p style="font-size:13px;color:var(--text-muted)">Обзор лидов на ремонт квартир</p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        {% if pending_chats %}
+        <a href="/sources" class="btn btn-sm" style="background:#c49a3c;color:#fff;border:none;text-decoration:none">🛰 Новых ЖК-чатов: {{ pending_chats }}</a>
+        {% endif %}
+        <span id="refreshTimer" style="font-size:11px;color:var(--text-muted)"></span>
+        <div class="period-tabs">
+            <a href="/?period=today" class="{% if period == 'today' %}active{% endif %}">Сегодня</a>
+            <a href="/?period=week" class="{% if period == 'week' %}active{% endif %}">Неделя</a>
+            <a href="/?period=month" class="{% if period == 'month' %}active{% endif %}">Месяц</a>
+            <a href="/?period=all" class="{% if period == 'all' %}active{% endif %}">Всё</a>
+        </div>
+    </div>
+</div>
 
 <script>
 (function(){
@@ -10,7 +31,7 @@
     var el = document.getElementById('refreshTimer');
     function tick(){
         if(secs <= 0){ location.reload(); return; }
-        el.textContent = 'обновление через ' + secs + 'с';
+        if (el) el.textContent = 'обновление через ' + secs + 'с';
         secs--;
         setTimeout(tick, 1000);
     }
@@ -18,20 +39,53 @@
 })();
 </script>
 
+<div class="card" style="margin-bottom:20px">
+    <h3 style="display:flex;justify-content:space-between;align-items:baseline">
+        Лиды по дням
+        <span style="font-size:11px;font-weight:400;color:var(--text-muted)">30 дней · всего {{ chart_total }} · <span style="color:#c49a3c">■</span> выходные</span>
+    </h3>
+    {% if chart_total > 0 %}
+    <svg viewBox="0 0 600 170" preserveAspectRatio="none" style="width:100%;height:170px;display:block">
+        {% for d in daily_leads %}
+        {% set h = ((d.count / chart_max * 140) | round(0, 'floor')) | int %}
+        <rect x="{{ loop.index0 * 20 + 1 }}" y="{{ 145 - h }}" width="18" height="{{ h if h > 0 else 1 }}" rx="2"
+              fill="{{ '#c49a3c' if d.weekend else '#5a8f8f' }}" opacity="0.85">
+            <title>{{ d.label }}: {{ d.count }}</title>
+        </rect>
+        {% endfor %}
+        <line x1="0" y1="146" x2="600" y2="146" stroke="var(--border)" stroke-width="1"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:4px">
+        <span>{{ daily_leads[0].label }}</span>
+        <span>пик: {{ chart_max }}/день</span>
+        <span>{{ daily_leads[-1].label }}</span>
+    </div>
+    {% else %}
+    <p style="color:var(--text-muted);font-size:13px">За последние 30 дней лидов не было</p>
+    {% endif %}
+</div>
+
 <div class="stats-grid">
-    <a href="/leads?status=new" class="stat-card primary" style="text-decoration:none">
+    <a href="/leads" class="stat-card primary" style="text-decoration:none">
         <div class="stat-icon pi">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         </div>
         <div class="stat-number">{{ total }}</div>
-        <div class="stat-label">Всего лидов</div>
+        <div class="stat-label">Всего лидов {{ delta_badge(deltas.total) }}</div>
+    </a>
+    <a href="/leads?status=new" class="stat-card info" style="text-decoration:none">
+        <div class="stat-icon ii">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        </div>
+        <div class="stat-number">{{ new_today_quality }}</div>
+        <div class="stat-label">Качественных сегодня {{ delta_badge(deltas.quality) }}</div>
     </a>
     <a href="/leads?status=new" class="stat-card info" style="text-decoration:none">
         <div class="stat-icon ii">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         </div>
-        <div class="stat-number">{{ new_today }}</div>
-        <div class="stat-label">Новых сегодня</div>
+        <div class="stat-number">{{ new_today_quality }}</div>
+        <div class="stat-label">Качественных сегодня</div>
     </a>
     <a href="/leads?status=new" class="stat-card warning" style="text-decoration:none">
         <div class="stat-icon wi">
@@ -45,7 +99,7 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         </div>
         <div class="stat-number">{{ processed_today }}</div>
-        <div class="stat-label">Обработано сегодня</div>
+        <div class="stat-label">Обработано сегодня {{ delta_badge(deltas.processed) }}</div>
     </a>
     {% if overdue_count > 0 %}
     <a href="/leads?status=new" class="stat-card danger" style="border-left:3px solid #dc2626;text-decoration:none">
@@ -61,9 +115,26 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         </div>
         <div class="stat-number">{{ status_counts.get('deal', 0) }}</div>
-        <div class="stat-label">Сделки</div>
+        <div class="stat-label">Сделки {{ delta_badge(deltas.deal) }}</div>
     </div>
 </div>
+
+{% if team_activity %}
+<div class="card" style="margin-bottom:20px">
+    <h3 style="display:flex;justify-content:space-between;align-items:baseline">
+        Последняя активность команды
+        <span style="font-size:11px;font-weight:400;color:var(--text-muted)">обновляется автоматически</span>
+    </h3>
+    {% for a in team_activity %}
+    <div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;align-items:center">
+        <span style="color:var(--text-muted);font-size:11px;width:64px;flex-shrink:0">{{ (a.at|msk).strftime('%H:%M') }}</span>
+        <span style="font-weight:600;min-width:110px;flex-shrink:0">{{ a.user }}</span>
+        <span style="flex:1;color:var(--text-secondary)">{{ a.text }}</span>
+        {% if a.lead_id %}<a href="/leads/{{ a.lead_id }}" style="color:var(--primary);font-size:12px;flex-shrink:0">лид #{{ a.lead_id }}</a>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
 
 {% if unprocessed_count > 0 or overdue_count > 0 %}
 <div class="card attention-card">
@@ -79,7 +150,6 @@
                 <a href="/leads/{{ lead.id }}" style="font-weight:600;color:var(--text)">{{ (lead.first_name or lead.username or 'Пользователь')[:25] }}</a>
                 <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
                 <span class="urgency-badge urgency-{{ lead.urgency }}">
-                    {% if lead.urgency == 'high' %}🔥{% elif lead.urgency == 'medium' %}⚡{% else %}💤{% endif %}
                     {{ lead.urgency }}
                 </span>
                 <span class="status-badge status-{{ lead.status }}">{{ lead.status_label() }}</span>

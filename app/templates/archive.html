@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Архив — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Архив <small>{{ total }}</small></h1>
-<p class="subtitle">Просмотренные и архивированные лиды</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Архив <small>{{ total }}</small></h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Просмотренные и архивированные лиды</p>
 
 <div class="filters-bar">
     <form method="get" class="filters-form">
@@ -31,7 +31,7 @@
                 <td style="white-space:nowrap">{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</td>
                 <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
                 <td>
-                    <a href="{{ lead.profile_url() }}" target="_blank">
+                    <a href="{{ lead.profile_url() }}" target="_blank" onclick="fetch('/api/log-profile-click/{{ lead.id }}').catch(function(){})">
                         {{ lead.first_name or '' }}<br>
                         <small style="color:var(--text-muted)">@{{ lead.username or '-' }}</small>
                     </a>
@@ -40,9 +40,9 @@
                     <span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score }}</span>
                 </td>
                 <td>
-                    {% if lead.urgency == 'high' %}🔥 Высокая
-                    {% elif lead.urgency == 'medium' %}⚡ Средняя
-                    {% else %}💤 Низкая{% endif %}
+                    {% if lead.urgency == 'high' %}Высокая
+                    {% elif lead.urgency == 'medium' %}Средняя
+                    {% else %}Низкая{% endif %}
                 </td>
                 <td>
                     {% if user and user.role != 'viewer' %}
@@ -136,7 +136,7 @@
         var reason=el.getAttribute('data-reason'),rec=el.getAttribute('data-rec');
         if(reason)x+='<div class="modal-section modal-reason"><strong>Причина:</strong> '+esc(reason)+'</div>';
         if(rec)x+='<div class="modal-section modal-rec"><strong style="color:var(--success)">Рекомендуемое:</strong><div style="margin-top:6px;line-height:1.6">'+esc(rec)+'</div></div>';
-        if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" class="btn btn-primary btn-sm" style="display:inline-block;margin-top:8px;text-decoration:none">Написать в Telegram</a>';
+        if(pf&&pf!=='#')x+='<a href="'+pf+'" target="_blank" onclick="fetch(\'/leads/'+el.getAttribute('data-id')+'/log-write-click\',{method:\'POST\'}).catch(function(){})" class="btn btn-primary btn-sm" style="display:inline-block;margin-top:8px;text-decoration:none">Написать в Telegram</a>';
         b.innerHTML=x;m.style.display='flex';
     }
     document.querySelectorAll('.msg-link').forEach(function(el){el.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();open(el)})});

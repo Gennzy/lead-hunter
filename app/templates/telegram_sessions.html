@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Telegram — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Telegram сессия</h1>
-<p class="subtitle">Подключение Telegram аккаунта для мониторинга</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Telegram сессия</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Подключение Telegram аккаунта для мониторинга</p>
 
 {% if success %}
 <div style="background:#f0fdf4;color:#16a34a;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:18px;border:1px solid #bbf7d0">{{ success }}</div>
@@ -12,7 +12,7 @@
 {% endif %}
 
 <div class="card" style="margin-bottom:20px">
-    <h3>Текущая сессия</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Текущая сессия</h3>
     <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Telegram аккаунт для мониторинга чатов</p>
 
     {% if telegram_session %}
@@ -32,6 +32,16 @@
         <div>
             <span style="color:var(--text-secondary);font-size:12px">Сессия:</span>
             <strong>{{ telegram_session.session_name }}</strong>
+        </div>
+        {% if telegram_session.last_active %}
+        <div>
+            <span style="color:var(--text-secondary);font-size:12px">Последняя активность:</span>
+            <strong>{{ (telegram_session.last_active|msk).strftime('%d.%m.%Y %H:%M') }}</strong>
+        </div>
+        {% endif %}
+        <div>
+            <span style="color:var(--text-secondary);font-size:12px">Создана:</span>
+            <strong>{{ (telegram_session.created_at|msk).strftime('%d.%m.%Y') if telegram_session.created_at else '—' }}</strong>
         </div>
     </div>
 
@@ -82,7 +92,7 @@
 </div>
 
 <div class="card">
-    <h3>Информация</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Информация</h3>
     <div style="font-size:13px;color:var(--text-secondary);line-height:1.8">
         <p>Telegram сессия используется для:</p>
         <ul style="margin:8px 0 8px 20px">

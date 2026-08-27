@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Франчайзи — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Франчайзи-панель</h1>
-<p class="subtitle">Управление тенантами и мониторинг</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Франчайзи-панель</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Управление тенантами и мониторинг</p>
 
 <div class="stats-grid">
     <div class="stat-card primary">
@@ -36,7 +36,7 @@
 </div>
 
 <div class="card">
-    <h3>Тенанты</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Тенанты</h3>
     <div class="table-responsive">
         <table class="data-table">
             <thead>
@@ -106,7 +106,7 @@
 </div>
 
 <div class="card" style="margin-top:20px">
-    <h3>Создать тенант</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Создать тенант</h3>
     <form method="post" action="/franchisor/tenant/create" class="form-grid" style="gap:12px; max-width:500px">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">

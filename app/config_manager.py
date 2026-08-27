@@ -13,25 +13,31 @@ _DEFAULT_SYSTEM_PROMPT = """Ты — AI-аналитик для компании
 
 Контекст: Тебе передаётся ТЕКСТ СООБЩЕНИЯ и reply_to — на что человек отвечает. Используй это для понимания смысла.
 
-НЕ считай лидами:
-- Жалобы на шум, соседей, капремонт
-- Оплата ЖКХ, квитанции, задолженности
-- Приёмка квартиры от застройщика (дефекты, акты)
-- Общие вопросы без конкретики
-- Рекламные посты компаний
-- Ищу работу / вакансии
+СТРОГО НЕ считай лидами (всегда is_lead=false, score=0-30):
+- Жалобы на шум, стройку, соседей, капремонт
+- Комментарии о ходе строительства ("ничего не делают", "громыхают", "ничего не меняется")
+- Обсуждение ЖКХ, квитанций, задолженностей
+- Приёмка квартиры от застройщика (дефекты, акты, замечания)
+- Общие разговоры, болтовня, мемы, шутки
+- Рекламные посты, предложения услуг
+- Поиск работы / вакансии
+- Вопросы о районе, инфраструктуре, парковке
+- Обсуждение цен на квартиры (покупка/продажа)
+- Новости о застройщике, сдаче дома
 
-СЧИТАЙ ЛИДАМИ (высокий приоритет):
-- Ищет бригаду/мастера/подрядчика для ремонта
-- Получил ключи и планирует ремонт
-- Спрашивает стоимость ремонта/отделки
-- Хочет сделать ремонт под ключ
-- Нужна помощь с выбором материалов/подрядчика
+СЧИТАЙ ЛИДАМИ (is_lead=true, score=70-100):
+- Ищет бригаду/мастера/подрядчика ДЛЯ РЕМОНТА СВОЕЙ КВАРТИРЫ
+- Получил ключи и ПЛАНИРУЕТ РЕМОНТ (не просто получил ключи)
+- Спрашивает стоимость РЕМОНТА/ОТДЕЛКИ своей квартиры
+- Хочет сделать РЕМОНТ ПОД КЛЮЧ своей квартиры
+- Нужна помощь с выбором подрядчика/материалов ДЛЯ РЕМОНТА
+- Конкретно планирует ремонт: "хочу сделать ремонт", "ищу мастеров для ремонта"
+
+ВАЖНО: Просто упоминание слова "ремонт" НЕ делает сообщение лидом. Человек должен ЯВНО выражать НАМЕРЕНИЕ сделать ремонт в своей квартире.
 
 Оцени по шкале 0-100:
-- 90-105: Явный лид (ищет подрядчика, получил ключи, хочет ремонт)
-- 80-89: Сильный лид (спрашивает цены, планирует)
-- 70-79: Слабый лид (общий вопрос о ремонте)
+- 90-100: Явный лид (ищет подрядчика для своего ремонта, получил ключи и планирует)
+- 70-89: Возможный лид (упоминает планы по ремонту)
 - 0-69: Не лид
 
 Ответ ТОЛЬКО в JSON:
@@ -124,6 +130,10 @@ class TenantConfig:
         return self._config.get("min_lead_score", settings.min_lead_score)
 
     @property
+    def require_keywords(self) -> bool:
+        return self._config.get("require_keywords", False)
+
+    @property
     def city(self) -> str:
         return self._config.get("city", _DEFAULT_CITY)
 
@@ -191,3 +201,104 @@ class TenantConfig:
 
     def update(self, data: dict):
         self._config.update(data)
+
+    # Plan limits
+    @property
+    def plan(self) -> str:
+        return self._config.get("plan", "free")
+
+    @property
+    def max_users(self) -> int:
+        limits = {"free": 3, "pro": 10, "enterprise": 999}
+        return limits.get(self.plan, 3)
+
+    @property
+    def max_chats(self) -> int:
+        limits = {"free": 5, "pro": 20, "enterprise": 999}
+        return limits.get(self.plan, 5)
+
+    @property
+    def plan_features(self) -> dict:
+        return {
+            "free": {
+                "name": "Free",
+                "price": 0,
+                "max_users": 3,
+                "max_chats": 5,
+                "max_leads": 100,
+                "ai_scoring": True,
+                "api_access": False,
+                "custom_webhooks": False,
+                "priority_support": False,
+            },
+            "pro": {
+                "name": "Pro",
+                "price": 9900,
+                "max_users": 10,
+                "max_chats": 20,
+                "max_leads": 1000,
+                "ai_scoring": True,
+                "api_access": True,
+                "custom_webhooks": True,
+                "priority_support": False,
+            },
+            "enterprise": {
+                "name": "Enterprise",
+                "price": 29900,
+                "max_users": 999,
+                "max_chats": 999,
+                "max_leads": 999999,
+                "ai_scoring": True,
+                "api_access": True,
+                "custom_webhooks": True,
+                "priority_support": True,
+            },
+        }.get(self.plan, {
+                "name": "Free",
+                "price": 0,
+                "max_users": 3,
+                "max_chats": 5,
+                "max_leads": 100,
+                "ai_scoring": True,
+                "api_access": False,
+                "custom_webhooks": False,
+                "priority_support": False,
+            })
+
+    @property
+    def all_plans(self) -> dict:
+        return {
+            "free": {
+                "name": "Free",
+                "price": 0,
+                "max_users": 3,
+                "max_chats": 5,
+                "max_leads": 100,
+                "ai_scoring": True,
+                "api_access": False,
+                "custom_webhooks": False,
+                "priority_support": False,
+            },
+            "pro": {
+                "name": "Pro",
+                "price": 9900,
+                "max_users": 10,
+                "max_chats": 20,
+                "max_leads": 1000,
+                "ai_scoring": True,
+                "api_access": True,
+                "custom_webhooks": True,
+                "priority_support": False,
+            },
+            "enterprise": {
+                "name": "Enterprise",
+                "price": 29900,
+                "max_users": 999,
+                "max_chats": 999,
+                "max_leads": 999999,
+                "ai_scoring": True,
+                "api_access": True,
+                "custom_webhooks": True,
+                "priority_support": True,
+            },
+        }

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -66,6 +67,25 @@ def _load_chats() -> list[dict]:
 
 def _save_chats(chats: list[dict]):
     CHATS_FILE.write_text(json.dumps(chats, ensure_ascii=False, indent=2))
+
+
+async def _sync_tenant_chats(tenant_id):
+    """Mirror active chats into tenant config so per-tenant monitors pick them up."""
+    active_urls = [c["url"] for c in _load_chats() if c.get("active", True)]
+    async with async_session() as session:
+        repo = TenantRepository(session)
+        tenant = await (repo.get_by_id(tenant_id) if tenant_id is not None
+                        else repo.get_by_slug("default"))
+        if not tenant:
+            return
+        cfg = dict(tenant.config or {})
+        if active_urls:
+            cfg["monitored_chats"] = ",".join(active_urls[:200])
+        else:
+            cfg.pop("monitored_chats", None)
+        tenant.config = cfg
+        flag_modified(tenant, "config")
+        await session.commit()
 
 
 def _get_active_chat_urls() -> list[str]:
@@ -548,8 +568,123 @@ async def dashboard(request: Request):
         overdue_q = select(func.count(Lead.id)).where(*overdue_filters)
         overdue_count = (await session.execute(overdue_q)).scalar() or 0
 
+        def _pct(cur, prev):
+            if prev:
+                return round((cur - prev) / prev * 100)
+            return None if not cur else 100
+
+        async def _cnt(filters):
+            return (await session.execute(
+                select(func.count(Lead.id)).where(*filters))).scalar() or 0
+
+        # === Deltas vs previous period ===
+        deltas = {}
+        if period_start:
+            duration = now - period_start
+            prev_start = period_start - duration
+            base_prev = [Lead.created_at >= prev_start, Lead.created_at < period_start,
+                         Lead.status != "deleted"]
+            if tenant_id is not None:
+                base_prev.append(Lead.tenant_id == tenant_id)
+            if manager_filter:
+                base_prev.append(manager_filter)
+            total_prev = await _cnt(base_prev)
+            deltas["total"] = _pct(total, total_prev)
+            deals_prev = await _cnt(base_prev + [Lead.status == "deal"])
+            deltas["deal"] = _pct(status_counts.get("deal", 0), deals_prev)
+
+        # Quality-today delta vs yesterday
+        y_start = today_start - timedelta(days=1)
+        quality_base = [Lead.lead_score >= 80, Lead.status != "deleted"]
+        if tenant_id is not None:
+            quality_base.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            quality_base.append(manager_filter)
+        quality_prev = await _cnt(quality_base + [
+            Lead.created_at >= y_start, Lead.created_at < today_start])
+        deltas["quality"] = _pct(new_today_quality, quality_prev)
+
+        # Processed-today delta vs yesterday (by update time)
+        processed_base = [Lead.status.in_(["contacted", "in_progress", "deal", "interested"])]
+        if tenant_id is not None:
+            processed_base.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            processed_base.append(manager_filter)
+        processed_prev = await _cnt(processed_base + [
+            Lead.updated_at >= y_start, Lead.updated_at < today_start])
+        deltas["processed"] = _pct(processed_today, processed_prev)
+
+        # === Daily leads chart (last 30 days) ===
+        chart_filters = [Lead.created_at >= now - timedelta(days=30)]
+        if tenant_id is not None:
+            chart_filters.append(Lead.tenant_id == tenant_id)
+        if manager_filter:
+            chart_filters.append(manager_filter)
+        day_rows = (await session.execute(
+            select(func.date(Lead.created_at), func.count(Lead.id))
+            .where(*chart_filters).group_by(func.date(Lead.created_at))
+        )).fetchall()
+        counts_by_day = {str(d): int(c or 0) for d, c in day_rows}
+        daily_leads = []
+        for i in range(29, -1, -1):
+            day = (now - timedelta(days=i)).date()
+            cnt = counts_by_day.get(day.isoformat(), 0)
+            daily_leads.append({
+                "label": day.strftime('%d.%m'),
+                "count": cnt,
+                "weekend": day.weekday() >= 5,
+            })
+        chart_max = max((d["count"] for d in daily_leads), default=0)
+        chart_total = sum(d["count"] for d in daily_leads)
+
+        # === Pending chat suggestions badge (admins only) ===
+        pending_chats = 0
+        if user.role in ("super_admin", "admin"):
+            from app.models import ChatSuggestion
+            cs_filters = [ChatSuggestion.status == "pending"]
+            if tenant_id is not None:
+                cs_filters.append(ChatSuggestion.tenant_id == tenant_id)
+            pending_chats = (await session.execute(
+                select(func.count(ChatSuggestion.id)).where(*cs_filters)
+            )).scalar() or 0
+
+        # === Team activity feed (last actions) ===
+        from app.models import ActionLog
+        act_filters = []
+        if tenant_id is not None:
+            act_filters.append(ActionLog.tenant_id == tenant_id)
+        if user.role == "manager":
+            act_filters.append(ActionLog.user_id == user.id)
+        act_rows = (await session.execute(
+            select(ActionLog, User)
+            .outerjoin(User, ActionLog.user_id == User.id)
+            .where(*act_filters)
+            .order_by(ActionLog.created_at.desc()).limit(12)
+        )).fetchall()
+        _action_labels = {
+            "login": "вошёл в систему",
+            "lead_view": "открыл карточку лида",
+            "click_write": "написал клиенту",
+            "profile_click": "открыл профиль клиента",
+            "status_change": "сменил статус",
+            "mark_not_lead": "отметил «не лид»",
+            "csv_export": "экспортировал лиды",
+        }
+        team_activity = []
+        for a, u in act_rows:
+            label = _action_labels.get(a.action_type, a.action_type)
+            meta = a.meta if isinstance(a.meta, dict) else {}
+            if a.action_type == "status_change" and meta:
+                label += f": {meta.get('from', '?')} → {meta.get('to', '?')}"
+            team_activity.append({
+                "user": (u.full_name or u.username) if u else "Система",
+                "text": label,
+                "lead_id": a.lead_id,
+                "at": a.created_at,
+            })
+
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, total=total, new_today=new_today, new_today_quality=new_today_quality, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, attention_leads=attention_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=utcnow(), period=period)
+    ctx = await _template_ctx(user, total=total, new_today=new_today, new_today_quality=new_today_quality, new_week=new_week, status_counts=status_counts, chat_leads=chat_leads, recent_leads=recent_leads, hot_leads=hot_leads, attention_leads=attention_leads, unprocessed_count=unprocessed_count, processed_today=processed_today, overdue_count=overdue_count, csrf_token=csrf, now=utcnow(), period=period, deltas=deltas, daily_leads=daily_leads, chart_max=chart_max, chart_total=chart_total, pending_chats=pending_chats, team_activity=team_activity)
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -562,6 +697,10 @@ async def leads_list(
     date_from: str = Query(None),
     date_to: str = Query(None),
     sort: str = Query(None),
+    score_min: int = Query(None, ge=0, le=100),
+    urgency_f: str = Query(None, alias="urgency"),
+    manager_f: str = Query(None, alias="manager"),
+    noresp: int = Query(None, ge=1, le=90),
     page: int = Query(1, ge=1),
 ):
     user = await get_current_user(request)
@@ -613,6 +752,22 @@ async def leads_list(
             extra_filters.append(Lead.created_at >= df_date)
         if dt_date:
             extra_filters.append(Lead.created_at < dt_date)
+        if score_min is not None:
+            extra_filters.append(Lead.lead_score >= score_min)
+        if urgency_f in ("high", "medium", "low"):
+            extra_filters.append(Lead.urgency == urgency_f)
+        if user.role != "manager" and manager_f:
+            if manager_f == "none":
+                extra_filters.append(Lead.assigned_to.is_(None))
+            elif manager_f.isdigit():
+                extra_filters.append(Lead.assigned_to == int(manager_f))
+        if noresp:
+            from sqlalchemy import and_ as sa_and, or_ as sa_or
+            nr_cutoff = utcnow() - timedelta(days=noresp)
+            extra_filters.append(sa_and_(
+                sa_or_(Lead.last_responded_at.is_(None), Lead.last_responded_at < nr_cutoff),
+                Lead.created_at <= nr_cutoff,
+            ))
 
         if lead_status == "deleted":
             count_filters = [Lead.status == "deleted"] + extra_filters
@@ -684,8 +839,54 @@ async def leads_list(
             nw_filters.append(Lead.assigned_to == manager_id)
         new_week = (await session.execute(select(func.count(Lead.id)).where(*nw_filters))).scalar() or 0
 
+        # Repeat-lead badges: other leads from the same authors (page scope)
+        repeat_info = {}
+        page_user_ids = [l.user_id for l in all_leads if l.user_id]
+        if page_user_ids:
+            rp_rows = (await session.execute(
+                select(Lead.id, Lead.user_id)
+                .where(Lead.user_id.in_(page_user_ids), Lead.status != "deleted")
+            )).fetchall()
+            by_user = {}
+            for rid, uid in rp_rows:
+                by_user.setdefault(uid, []).append(rid)
+            for l in all_leads:
+                if l.user_id and len(by_user.get(l.user_id, [])) > 1:
+                    others = [rid for rid in by_user[l.user_id] if rid != l.id]
+                    repeat_info[l.id] = {"other_id": others[0], "count": len(others)}
+
+        # Managers list for admin filter
+        managers_list = []
+        if user.role in ("super_admin", "admin"):
+            from app.repositories import UserRepository
+            users_all = await UserRepository(session, tenant_id).list_active()
+            managers_list = [{"id": u.id, "name": (u.full_name or u.username or "")[:22]}
+                             for u in users_all if u.role in ("admin", "manager")]
+
+    # Prebuilt query strings (preserve filters across tabs/sort/csv)
+    from urllib.parse import urlencode
+    qs_parts = []
+    if chat:
+        qs_parts.append(("chat", chat))
+    if search:
+        qs_parts.append(("search", search))
+    if date_from:
+        qs_parts.append(("date_from", date_from))
+    if date_to:
+        qs_parts.append(("date_to", date_to))
+    if score_min is not None:
+        qs_parts.append(("score_min", score_min))
+    if urgency_f in ("high", "medium", "low"):
+        qs_parts.append(("urgency", urgency_f))
+    if user.role != "manager" and manager_f:
+        qs_parts.append(("manager", manager_f))
+    if noresp:
+        qs_parts.append(("noresp", noresp))
+    qs_nostatus = ("&" + urlencode(qs_parts)) if qs_parts else ""
+    csv_qs = urlencode((([("status", lead_status)] if lead_status else []) + qs_parts))
+
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=utcnow(), new_week=new_week)
+    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=utcnow(), new_week=new_week, repeat_info=repeat_info, managers_list=managers_list, score_min=score_min, urgency_f=urgency_f or "", manager_f=manager_f or "", noresp=noresp, qs_nostatus=qs_nostatus, csv_qs=csv_qs)
     return templates.TemplateResponse(request, "leads.html", ctx)
 
 
@@ -823,6 +1024,7 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
             user.id, "lead_view", lead_id=lead_id,
             meta={"chat": lead.chat_title, "score": lead.lead_score},
         )
+        await session.commit()
 
         # Record first response time (when assigned user views the lead)
         if lead.assigned_to == user.id:
@@ -849,6 +1051,17 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
             sel(FollowUp).where(FollowUp.lead_id == lead_id, FollowUp.status == "pending").order_by(FollowUp.scheduled_at.asc())
         )).scalars().all()
 
+        # Author's other messages across chats (context: what else they wrote)
+        author_messages = []
+        if lead.user_id:
+            from app.models import UserMessageHistory
+            author_messages = (await session.execute(
+                sel(UserMessageHistory)
+                .where(UserMessageHistory.tenant_id == lead.tenant_id,
+                       UserMessageHistory.user_id == lead.user_id)
+                .order_by(UserMessageHistory.created_at.desc()).limit(15)
+            )).scalars().all()
+
         lead_data = {
             "id": lead.id, "user_id": lead.user_id, "username": lead.username,
             "first_name": lead.first_name, "last_name": lead.last_name,
@@ -873,7 +1086,7 @@ async def lead_detail(request: Request, lead_id: int, error: str = Query(None)):
     ml_prediction = await score_lead(lead, tenant_id)
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error, ml_prediction=ml_prediction, appointments=appointments, follow_ups=follow_ups)
+    ctx = await _template_ctx(user, lead=lead, assignee=assignee, history=history, prev_id=prev_id, next_id=next_id, csrf_token=csrf, error=error, ml_prediction=ml_prediction, appointments=appointments, follow_ups=follow_ups, author_messages=author_messages)
     return templates.TemplateResponse(request, "lead_detail.html", ctx)
 
 
@@ -890,6 +1103,8 @@ async def lead_feedback(request: Request, lead_id: int, feedback: str = Form(...
         lead = await leads.get_by_id(lead_id)
         if not lead:
             return RedirectResponse("/leads", status_code=303)
+        if user.role == "manager" and lead.assigned_to != user.id:
+            return RedirectResponse(f"/leads/{lead_id}", status_code=303)
 
         if feedback in ("useful", "not_useful"):
             is_new_feedback = lead.feedback != feedback
@@ -1272,6 +1487,11 @@ async def complete_appointment(
         if not apt:
             return RedirectResponse("/leads", status_code=303)
 
+        if user.role == "manager":
+            lead_obj = await LeadRepository(session, tenant_id).get_by_id(apt.lead_id)
+            if not lead_obj or lead_obj.assigned_to != user.id:
+                return RedirectResponse("/leads", status_code=303)
+
         await apt_repo.complete(apt_id)
 
         history = LeadHistoryRepository(session, tenant_id)
@@ -1636,12 +1856,15 @@ async def user_reset_password(
 
 
 @app.get("/analytics", response_class=HTMLResponse)
-async def analytics(request: Request):
+async def analytics(request: Request, days: int = Query(30, ge=1, le=365)):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
+    days_start = utcnow() - timedelta(days=days)
 
     async with async_session() as session:
         leads = LeadRepository(session, tenant_id)
@@ -1649,7 +1872,7 @@ async def analytics(request: Request):
 
         # Funnel data
         funnel_statuses = ["new", "contacted", "interested", "deal"]
-        funnel_filters = []
+        funnel_filters = [Lead.created_at >= days_start]
         if tenant_id is not None:
             funnel_filters.append(Lead.tenant_id == tenant_id)
         funnel_q = select(Lead.status, func.count(Lead.id)).where(*funnel_filters).group_by(Lead.status)
@@ -1658,7 +1881,7 @@ async def analytics(request: Request):
         funnel = [(s, funnel_map.get(s, 0)) for s in funnel_statuses]
 
         # Source report: top chats by deal conversion
-        source_filters = [Lead.status != "deleted"]
+        source_filters = [Lead.status != "deleted", Lead.created_at >= days_start]
         if tenant_id is not None:
             source_filters.append(Lead.tenant_id == tenant_id)
         source_q = (
@@ -1723,44 +1946,51 @@ async def analytics(request: Request):
     from app.analyzer import analyze_feedback
     feedback_data = await analyze_feedback(tenant_id)
 
-    # Get prediction stats
+    # Get prediction stats (cached 10 min — score_lead per lead is heavy)
+    global _prediction_cache
     prediction_stats = None
-    try:
-        from app.ml_scorer import score_lead
-        from app.models import Lead as LeadModel
-        pred_q = select(LeadModel).where(
-            LeadModel.status.notin_(["deleted", "archive"]),
-            LeadModel.lead_score.isnot(None),
-        )
-        if tenant_id:
-            pred_q = pred_q.where(LeadModel.tenant_id == tenant_id)
-        pred_leads = (await session.execute(pred_q.limit(100))).scalars().all()
+    now_ts = time.time()
+    if (_prediction_cache["data"] is not None and _prediction_cache["tenant"] == tenant_id
+            and now_ts - _prediction_cache["ts"] < 600):
+        prediction_stats = _prediction_cache["data"]
+    if prediction_stats is None:
+        try:
+            from app.ml_scorer import score_lead
+            from app.models import Lead as LeadModel
+            pred_q = select(LeadModel).where(
+                LeadModel.status.notin_(["deleted", "archive"]),
+                LeadModel.lead_score.isnot(None),
+            )
+            if tenant_id:
+                pred_q = pred_q.where(LeadModel.tenant_id == tenant_id)
+            pred_leads = (await session.execute(pred_q.limit(100))).scalars().all()
 
-        if pred_leads:
-            high_prob = 0
-            medium_prob = 0
-            low_prob = 0
-            total_prob = 0
+            if pred_leads:
+                high_prob = 0
+                medium_prob = 0
+                low_prob = 0
+                total_prob = 0
 
-            for lead in pred_leads:
-                pred = await score_lead(lead, tenant_id)
-                prob = pred.get("probability", 0)
-                total_prob += prob
-                if prob >= 70:
-                    high_prob += 1
-                elif prob >= 40:
-                    medium_prob += 1
-                else:
-                    low_prob += 1
+                for lead in pred_leads:
+                    pred = await score_lead(lead, tenant_id)
+                    prob = pred.get("probability", 0)
+                    total_prob += prob
+                    if prob >= 70:
+                        high_prob += 1
+                    elif prob >= 40:
+                        medium_prob += 1
+                    else:
+                        low_prob += 1
 
-            prediction_stats = {
-                "high_probability": high_prob,
-                "medium_probability": medium_prob,
-                "low_probability": low_prob,
-                "avg_probability": round(total_prob / len(pred_leads), 1) if pred_leads else 0,
-            }
-    except Exception:
-        pass
+                prediction_stats = {
+                    "high_probability": high_prob,
+                    "medium_probability": medium_prob,
+                    "low_probability": low_prob,
+                    "avg_probability": round(total_prob / len(pred_leads), 1) if pred_leads else 0,
+                }
+                _prediction_cache.update({"data": prediction_stats, "ts": now_ts, "tenant": tenant_id})
+        except Exception:
+            pass
 
     hotness_stats = {"hot": 0, "warm": 0, "cold": 0, "total": 0}
     try:
@@ -1787,9 +2017,47 @@ async def analytics(request: Request):
         this_week_deals=this_week_deals, last_week_deals=last_week_deals,
         this_week_avg_score=this_week_avg_score, last_week_avg_score=last_week_avg_score,
         leads_by_day=leads_by_day, prediction_stats=prediction_stats,
-        hotness_stats=hotness_stats,
+        hotness_stats=hotness_stats, days=days,
     )
     return templates.TemplateResponse(request, "analytics.html", ctx)
+
+
+@app.get("/analytics/export/csv")
+async def analytics_export_csv(request: Request, days: int = Query(30, ge=1, le=365)):
+    """CSV: funnel + source conversion report."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+    days_start = utcnow() - timedelta(days=days)
+
+    async with async_session() as session:
+        filters = [Lead.status != "deleted", Lead.created_at >= days_start]
+        if tenant_id is not None:
+            filters.append(Lead.tenant_id == tenant_id)
+        rows = (await session.execute(
+            select(Lead.chat_title, func.count(Lead.id),
+                   func.sum(case((Lead.status == "deal", 1), else_=0)),
+                   func.coalesce(func.sum(case((Lead.status == "deal", Lead.deal_amount), else_=None)), 0))
+            .where(*filters).group_by(Lead.chat_title)
+            .order_by(func.count(Lead.id).desc())
+        )).fetchall()
+
+    import csv as _csv
+    from io import StringIO
+    buf = StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["Чат", "Лидов", "Сделок", "Конверсия %", "Сумма сделок"])
+    for title, cnt, deals, sm in rows:
+        conv = round((deals / cnt * 100), 1) if cnt else 0
+        w.writerow([title, cnt, int(deals or 0), conv, float(sm or 0)])
+    buf.seek(0)
+    from fastapi.responses import Response as _Resp
+    return _Resp(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=analytics_{days}d.csv"},
+    )
 
 
 @app.get("/analytics/pdf")
@@ -2018,14 +2286,14 @@ async def team_page(request: Request):
 
 
 @app.get("/team/kpi", response_class=HTMLResponse)
-async def team_kpi_page(request: Request):
+async def team_kpi_page(request: Request, period: str = Query(None)):
     user = await get_current_user(request)
     if not user or user.role not in ("super_admin", "admin"):
         return RedirectResponse("/login", status_code=303)
 
     tenant_id = await _get_tenant_id(user)
     today = utcnow()
-    current_period = today.strftime("%Y-%m")
+    current_period = period if (period and len(period) == 7 and period[4] == "-") else today.strftime("%Y-%m")
 
     async with async_session() as session:
         users_repo = UserRepository(session, tenant_id)
@@ -2035,13 +2303,11 @@ async def team_kpi_page(request: Request):
         leads_repo = LeadRepository(session, tenant_id)
 
         kpi_data = []
+        y_p, m_p = int(current_period[:4]), int(current_period[5:7])
+        period_start = datetime(y_p, m_p, 1)
+        period_end = datetime(y_p + 1, 1, 1) if m_p == 12 else datetime(y_p, m_p + 1, 1)
         for u in active_users:
             # Get actual stats for this period
-            period_start = datetime.strptime(f"{current_period}-01", "%Y-%m-%d")
-            if today.month == 12:
-                period_end = datetime.strptime(f"{today.year + 1}-01-01", "%Y-%m-%d")
-            else:
-                period_end = datetime.strptime(f"{today.year}-{today.month + 1:02d}-01", "%Y-%m-%d")
 
             actual_leads = await leads_repo.count(
                 Lead.assigned_to == u.id,
@@ -2054,13 +2320,15 @@ async def team_kpi_page(request: Request):
                 Lead.created_at >= period_start,
                 Lead.created_at < period_end,
             )
+            revenue_filters = [Lead.assigned_to == u.id,
+                               Lead.deal_amount.isnot(None),
+                               Lead.status == "deal",
+                               Lead.created_at >= period_start,
+                               Lead.created_at < period_end]
+            if tenant_id is not None:
+                revenue_filters.append(Lead.tenant_id == tenant_id)
             revenue_result = await session.execute(
-                select(func.sum(Lead.deal_amount)).where(
-                    Lead.assigned_to == u.id,
-                    Lead.deal_amount.isnot(None),
-                    Lead.created_at >= period_start,
-                    Lead.created_at < period_end,
-                )
+                select(func.sum(Lead.deal_amount)).where(*revenue_filters)
             )
             actual_revenue = revenue_result.scalar() or 0
 
@@ -2195,7 +2463,7 @@ async def team_commissions_page(request: Request, period: str = Query(None)):
         comm_data = []
         for row in summary:
             uid, total_comm, total_bonus, total_deals, deals_count = row
-            penalties_total = await penalty_repo.get_total(uid)
+            penalties_total = await penalty_repo.get_total(uid, period)
             net = (total_comm or 0) + (total_bonus or 0) - penalties_total
             comm_data.append({
                 "user": user_map.get(uid),
@@ -2210,12 +2478,13 @@ async def team_commissions_page(request: Request, period: str = Query(None)):
         total_commission = sum(d["total_commission"] for d in comm_data)
         total_bonus = sum(d["total_bonus"] for d in comm_data)
         total_penalties = sum(d["penalties_total"] for d in comm_data)
+        penalties_list = await penalty_repo.list_for_period(period)
 
     csrf = generate_csrf_token(_get_session_id(request))
     ctx = await _template_ctx(
         user, comm_data=comm_data, all_comms=all_comms, user_map=user_map,
         current_period=period, total_commission=total_commission, total_bonus=total_bonus,
-        total_penalties=total_penalties, csrf_token=csrf,
+        total_penalties=total_penalties, penalties_list=penalties_list, csrf_token=csrf,
     )
     return templates.TemplateResponse(request, "team_commissions.html", ctx)
 
@@ -2366,6 +2635,97 @@ async def team_timesheet_page(request: Request, date: str = Query(None)):
 
     ctx = await _template_ctx(user, ws_data=ws_data, current_date=date)
     return templates.TemplateResponse(request, "team_timesheet.html", ctx)
+
+
+@app.get("/team/timesheet/week")
+async def team_timesheet_week(request: Request, date: str = Query(None)):
+    """Weekly timesheet: per-user daily hours for 7 days starting from `date`."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+
+    base = utcnow() - timedelta(days=utcnow().weekday())
+    if date:
+        try:
+            base = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            pass
+    base = base.replace(hour=0, minute=0, second=0, microsecond=0)
+    days = [base + timedelta(days=i) for i in range(7)]
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+        from app.models import WorkSession
+        week_rows = (await session.execute(
+            select(WorkSession).where(
+                WorkSession.started_at >= days[0],
+                WorkSession.started_at < days[-1] + timedelta(days=1),
+            )
+        )).scalars().all()
+
+    grid = {u.id: {"user": u, "hours": [0.0] * 7, "total": 0.0} for u in active_users}
+    for s in week_rows:
+        if s.user_id not in grid or not s.total_seconds:
+            continue
+        for i, d in enumerate(days):
+            if s.started_at.date() == d.date():
+                h = round(s.total_seconds / 3600, 1)
+                grid[s.user_id]["hours"][i] += h
+                grid[s.user_id]["total"] += h
+                break
+
+    week_data = sorted(grid.values(), key=lambda g: -g["total"])
+    prev_week = (days[0] - timedelta(days=7)).strftime("%Y-%m-%d")
+    next_week = (days[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
+    ctx = await _template_ctx(user, week_data=week_data, week_days=days,
+                              prev_week=prev_week, next_week=next_week,
+                              week_start=days[0].strftime("%Y-%m-%d"))
+    return templates.TemplateResponse(request, "team_timesheet_week.html", ctx)
+
+
+@app.get("/team/export/csv")
+async def team_export_csv(request: Request):
+    """CSV: per-manager performance snapshot."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        users_repo = UserRepository(session, tenant_id)
+        active_users = await users_repo.list_active()
+        rows_out = []
+        for u in active_users:
+            if u.role not in ("admin", "manager"):
+                continue
+            total = (await session.execute(
+                select(func.count(Lead.id)).where(
+                    Lead.assigned_to == u.id, Lead.status != "deleted")
+            )).scalar() or 0
+            deals = (await session.execute(
+                select(func.count(Lead.id)).where(
+                    Lead.assigned_to == u.id, Lead.status == "deal")
+            )).scalar() or 0
+            revenue = (await session.execute(
+                select(func.sum(Lead.deal_amount)).where(
+                    Lead.assigned_to == u.id, Lead.status == "deal")
+            )).scalar() or 0
+            conv = round(deals / total * 100, 1) if total else 0
+            rows_out.append([u.full_name or u.username, u.role, total, deals, conv, float(revenue or 0)])
+
+    import csv as _csv
+    from io import StringIO
+    buf = StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["Сотрудник", "Роль", "Лидов", "Сделок", "Конверсия %", "Выручка"])
+    for r in rows_out:
+        w.writerow(r)
+    buf.seek(0)
+    from fastapi.responses import Response as _Resp
+    return _Resp(content=buf.getvalue().encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
+                 headers={"Content-Disposition": "attachment; filename=team.csv"})
 
 
 def _format_duration(seconds: float) -> str:
@@ -3133,13 +3493,16 @@ async def settings_page(request: Request, error: str = Query(None), success: str
     tenant_id = await _get_tenant_id(user)
     chats = _load_chats()
 
-    # Lead counts per chat
+    # Lead counts per chat (tenant-scoped)
     chat_lead_counts = {}
     async with async_session() as session:
         from sqlalchemy import func as sa_func
+        q_filters = [Lead.status != "deleted"]
+        if tenant_id is not None:
+            q_filters.append(Lead.tenant_id == tenant_id)
         q = (
             select(Lead.chat_title, sa_func.count(Lead.id))
-            .where(Lead.status != "deleted")
+            .where(*q_filters)
             .group_by(Lead.chat_title)
         )
         rows = (await session.execute(q)).fetchall()
@@ -3176,6 +3539,9 @@ async def update_tenant_config(
     auto_assign: str = Form("false"),
     reminder_hours: int = Form(2),
     escalation_hours: int = Form(4),
+    followup_hours: int = Form(24),
+    followup_stage2_days: int = Form(3),
+    followup_enabled: str = Form("false"),
     csrf_token: str = Form(""),
 ):
     admin = await get_current_user(request)
@@ -3209,6 +3575,9 @@ async def update_tenant_config(
         config["auto_assign"] = auto_assign == "true"
         config["reminder_hours"] = max(1, min(48, reminder_hours))
         config["escalation_hours"] = max(1, min(72, escalation_hours))
+        config["followup_hours"] = max(4, min(168, followup_hours))
+        config["followup_stage2_days"] = max(0, min(30, followup_stage2_days))
+        config["followup_enabled"] = followup_enabled == "true"
         if owner_chat_id and owner_chat_id.strip():
             try:
                 config["owner_chat_id"] = int(owner_chat_id.strip())
@@ -3277,7 +3646,7 @@ async def update_tenant_appearance(
 UPLOAD_DIR = Path(__file__).parent / "static" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"}
+ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/x-icon", "image/vnd.microsoft.icon"}  # no SVG — stored XSS risk
 MAX_UPLOAD_SIZE = 2 * 1024 * 1024  # 2MB
 
 
@@ -3381,6 +3750,56 @@ async def update_tenant_noise_keywords(
     return RedirectResponse("/settings?success=Шумовые слова сохранены", status_code=303)
 
 
+@app.get("/settings/prices/export")
+async def prices_export(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+    async with async_session() as session:
+        repo = TenantRepository(session)
+        tenant = await (repo.get_by_id(tenant_id) if tenant_id is not None
+                        else repo.get_by_slug("default"))
+        price_list = (tenant.config or {}).get("price_list", {}) if tenant else {}
+    from fastapi.responses import Response as _Resp
+    import json as _json
+    return _Resp(content=_json.dumps(price_list, ensure_ascii=False, indent=2).encode("utf-8"),
+                 media_type="application/json",
+                 headers={"Content-Disposition": "attachment; filename=price_list.json"})
+
+
+@app.post("/settings/prices/import")
+async def prices_import(request: Request, data: str = Form(""), csrf_token: str = Form("")):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/login", status_code=303)
+    if not validate_csrf_token(csrf_token):
+        return HTMLResponse(content="Invalid CSRF token", status_code=403)
+    tenant_id = await _get_tenant_id(user)
+    try:
+        parsed = json.loads(data)
+        assert isinstance(parsed, dict)
+    except Exception:
+        return RedirectResponse("/settings?error=Импорт прайса: невалидный JSON", status_code=303)
+    clean = {}
+    for cat, v in parsed.items():
+        if isinstance(v, dict) and ("min" in v or "max" in v):
+            clean[cat] = {"min": int(v.get("min") or 0), "max": int(v.get("max") or 0),
+                          "unit": str(v.get("unit", "₽/м²"))[:20]}
+    async with async_session() as session:
+        repo = TenantRepository(session)
+        tenant = await (repo.get_by_id(tenant_id) if tenant_id is not None
+                        else repo.get_by_slug("default"))
+        if not tenant:
+            return RedirectResponse("/settings?error=Тенант не найден", status_code=303)
+        cfg = dict(tenant.config or {})
+        cfg["price_list"] = clean
+        tenant.config = cfg
+        flag_modified(tenant, "config")
+        await session.commit()
+    return RedirectResponse(f"/settings?success=Прайс+импортирован+({len(clean)}+категорий)", status_code=303)
+
+
 @app.post("/settings/config/prices")
 async def update_tenant_prices(
     request: Request,
@@ -3471,6 +3890,7 @@ async def add_chat(
 
     chats.append({"url": chat, "active": True})
     _save_chats(chats)
+    await _sync_tenant_chats(tenant_id)
     return RedirectResponse("/settings?success=Чат+добавлен", status_code=303)
 
 
@@ -3490,6 +3910,7 @@ async def remove_chat(
     chats = _load_chats()
     chats = [c for c in chats if c["url"] != chat]
     _save_chats(chats)
+    await _sync_tenant_chats(tenant_id)
     return RedirectResponse("/settings?success=Чат+удалён", status_code=303)
 
 
@@ -3512,8 +3933,38 @@ async def toggle_chat(
             c["active"] = not c.get("active", True)
             break
     _save_chats(chats)
+    await _sync_tenant_chats(tenant_id)
     status = "включён" if any(c["url"] == chat and c.get("active", True) for c in chats) else "выключен"
     return RedirectResponse(f"/settings?success=Чат+{status}", status_code=303)
+
+
+@app.get("/ml-status", response_class=HTMLResponse)
+async def ml_status_page(request: Request):
+    """ML model health: accuracy, training count, weights drift."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/", status_code=303)
+
+    from app.ml_scorer import get_model_metrics, WEIGHTS_FILE
+    metrics = await get_model_metrics()
+
+    weights_info = {}
+    try:
+        if WEIGHTS_FILE.exists():
+            data = json.loads(WEIGHTS_FILE.read_text())
+            weights_info = {
+                "training_count": data.get("training_count", 0),
+                "updated_at": data.get("updated_at", ""),
+                "top_weights": sorted(
+                    ({"feature": k, "weight": round(v, 3)} for k, v in (data.get("weights") or {}).items()),
+                    key=lambda x: abs(x["weight"]), reverse=True)[:8],
+            }
+    except Exception:
+        pass
+
+    csrf = generate_csrf_token(_get_session_id(request))
+    ctx = await _template_ctx(user, metrics=metrics, weights_info=weights_info, csrf_token=csrf)
+    return templates.TemplateResponse(request, "ml_status.html", ctx)
 
 
 @app.get("/api/stats")
@@ -3822,6 +4273,8 @@ async def template_add(
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/templates", status_code=303)
     if not validate_csrf_token(csrf_token):
         return HTMLResponse(content="Invalid CSRF token", status_code=403)
     tenant_id = await _get_tenant_id(user)
@@ -3837,6 +4290,8 @@ async def template_delete(request: Request, template_id: int, csrf_token: str = 
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/templates", status_code=303)
     if not validate_csrf_token(csrf_token):
         return HTMLResponse(content="Invalid CSRF token", status_code=403)
     tenant_id = await _get_tenant_id(user)
@@ -3864,7 +4319,7 @@ async def api_template_generate(request: Request):
     from config import settings as _settings
     api_key = _settings.openai_api_key or ""
     base_url = _settings.openai_base_url or "https://api.groq.com/openai/v1"
-    model = _settings.openai_model or "llama-3.3-70b-versatile"
+    model = _settings.openai_model or "openai/gpt-oss-20b"
     if not api_key:
         return HTMLResponse(content="AI API ключ не настроен", status_code=500)
 
@@ -3911,47 +4366,61 @@ async def api_template_generate(request: Request):
         "- Telegram-формат: короткие абзацы, без длинных простыней\n"
         "- Не начинай с «Здравствуйте, спасибо за обращение» — мы первые пишем!\n"
         "- Используй эмодзи умеренно\n\n"
-        "Верни ТОЛЬКО JSON без markdown без кодбеков:\n"
+        "Верни ТОЛЬКО JSON без markdown без кодбеков без thinking:\n"
         '{"name": "название шаблона на русском (до 50 символов)", '
         '"body": "текст шаблона на русском (1-5 сообщений, с переносами строк)"}'
     )
 
     import aiohttp as _aiohttp
-    try:
-        async with _aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 1024,
-                },
-                timeout=_aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    err = await resp.text()
-                    logging.error("Groq API error %s: %s", resp.status, err)
-                    return HTMLResponse(content="Ошибка AI API", status_code=502)
-                result = await resp.json()
-                text = result["choices"][0]["message"]["content"].strip()
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[1]
-                if text.endswith("```"):
-                    text = text.rsplit("```", 1)[0]
-                text = text.strip()
-                parsed = json.loads(text, strict=False)
-                return HTMLResponse(
-                    content=json.dumps({"name": parsed.get("name", ""), "body": parsed.get("body", "")}),
-                    media_type="application/json",
-                )
-    except Exception as e:
-        logging.error("AI template generation error: %s", e)
-        return HTMLResponse(content="Ошибка генерации шаблона", status_code=500)
+    for _attempt in range(5):
+        try:
+            async with _aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.7,
+                        "max_tokens": 1024,
+                    },
+                    timeout=_aiohttp.ClientTimeout(total=45),
+                ) as resp:
+                    if resp.status == 429:
+                        wait = 8
+                        logging.warning("Groq rate limit on attempt %d, waiting %ds", _attempt + 1, wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    if resp.status != 200:
+                        err = await resp.text()
+                        logging.error("Groq API error %s: %s", resp.status, err)
+                        return HTMLResponse(content=f"Ошибка AI API: {resp.status}", status_code=502)
+                    result = await resp.json()
+                    text = result["choices"][0]["message"]["content"].strip()
+                    # Strip thinking tags
+                    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+                    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
+                    if text.startswith("```"):
+                        text = text.split("\n", 1)[1]
+                    if text.endswith("```"):
+                        text = text.rsplit("```", 1)[0]
+                    text = text.strip()
+                    json_match = re.search(r'\{[^{}]*"name"[^{}]*"body"[^{}]*\}', text, re.DOTALL)
+                    if json_match:
+                        text = json_match.group(0)
+                    parsed = json.loads(text, strict=False)
+                    return HTMLResponse(
+                        content=json.dumps({"name": parsed.get("name", ""), "body": parsed.get("body", "")}),
+                        media_type="application/json",
+                    )
+        except Exception as e:
+            logging.warning("Template generation error attempt %d: %s", _attempt + 1, e)
+            await asyncio.sleep(5)
+            continue
+    return HTMLResponse(content="AI API временно недоступен из-за нагрузки. Подождите 30 сек и попробуйте снова", status_code=503)
 
 
 @app.get("/kanban", response_class=HTMLResponse)
@@ -3960,10 +4429,24 @@ async def kanban_page(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=303)
     tenant_id = await _get_tenant_id(user)
+    manager_filter = Lead.assigned_to == user.id if user.role == "manager" else None
     async with async_session() as session:
         leads_repo = LeadRepository(session, tenant_id)
         all_leads = await leads_repo.list_all()
+        # Prefetch assignees once — avoids N+1 lazy loads per card
+        assignee_ids = {l.assigned_to for l in all_leads if l.assigned_to}
+        assignee_map = {}
+        if assignee_ids:
+            from app.models import User as _U
+            u_rows = (await session.execute(
+                select(_U).where(_U.id.in_(assignee_ids))
+            )).scalars().all()
+            assignee_map = {u.id: u for u in u_rows}
+        for l in all_leads:
+            l.assigned_user = assignee_map.get(l.assigned_to)
         active_leads = [l for l in all_leads if l.status not in ("deleted", "archive")]
+        if manager_filter is not None:
+            active_leads = [l for l in active_leads if l.assigned_to == user.id]
         chats = sorted(set(l.chat_title for l in active_leads if l.chat_title))
     csrf = generate_csrf_token(_get_session_id(request))
     ctx = await _template_ctx(user, leads=active_leads, chats=chats, csrf_token=csrf)
@@ -3987,6 +4470,8 @@ async def kanban_move(request: Request):
         lead = await leads.get_by_id(lead_id)
         if not lead:
             raise HTTPException(status_code=404)
+        if user.role == "manager" and lead.assigned_to != user.id:
+            raise HTTPException(status_code=403)
         old_status = lead.status
         lead.status = new_status
         if new_status == "not_interested" and reason:
@@ -4015,6 +4500,238 @@ async def kanban_move(request: Request):
             pass
 
     await _fire_webhooks(tenant_id, "status_change", {"lead_id": lead_id, "from": old_status, "to": new_status})
+    return {"ok": True}
+
+
+@app.post("/api/leads/{lead_id}/not-lead")
+async def api_lead_not_lead(request: Request, lead_id: int):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        leads = LeadRepository(session, tenant_id)
+        lead = await leads.get_by_id(lead_id)
+        if not lead:
+            raise HTTPException(status_code=404)
+        if user.role == "manager" and lead.assigned_to != user.id:
+            raise HTTPException(status_code=403)
+
+        old_status = lead.status
+        lead.feedback = "not_useful"
+        lead.feedback_reason = "off_topic"
+        lead.status = "deleted"
+        await LeadHistoryRepository(session, tenant_id).create(
+            lead_id=lead_id, user_id=user.id, action="status_change",
+            old_value=old_status, new_value="deleted",
+            note=f"{user.full_name or user.username}: отмечено «не лид» (канбан)",
+        )
+        await ActionLogRepository(session, tenant_id).log(
+            user.id, "mark_not_lead", lead_id=lead_id,
+            meta={"from": old_status, "via": "kanban"},
+        )
+        await session.commit()
+
+        try:
+            from app.ml_scorer import train_on_outcome
+            train_on_outcome(lead, is_positive=False, learning_rate=0.03)
+        except Exception:
+            pass
+
+    return {"ok": True}
+
+
+@app.get("/funnel", response_class=HTMLResponse)
+async def funnel_page(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user.role not in ("super_admin", "admin"):
+        return RedirectResponse("/", status_code=303)
+    tenant_id = await _get_tenant_id(user)
+
+    days = int(request.query_params.get("days", 30))
+    if days not in (1, 7, 30, 90):
+        days = 30
+    since = utcnow() - timedelta(days=days)
+
+    from app.models import ActionLog
+
+    async with async_session() as session:
+        lead_filters = [Lead.created_at >= since]
+        log_filters = [ActionLog.created_at >= since]
+        if tenant_id is not None:
+            lead_filters.append(Lead.tenant_id == tenant_id)
+            log_filters.append(ActionLog.tenant_id == tenant_id)
+
+        status_rows = (await session.execute(
+            select(Lead.status, func.count(Lead.id)).where(*lead_filters).group_by(Lead.status)
+        )).fetchall()
+        status_counts = {s: c for s, c in status_rows}
+
+        deal_row = (await session.execute(
+            select(func.count(Lead.id), func.coalesce(func.sum(Lead.deal_amount), 0))
+            .where(*lead_filters, Lead.status == "deal")
+        )).first()
+        deals_count = int(deal_row[0] or 0)
+        deals_sum = float(deal_row[1] or 0)
+
+        event_rows = (await session.execute(
+            select(
+                ActionLog.action_type,
+                func.count(func.distinct(ActionLog.lead_id)),
+                func.count(ActionLog.id),
+            )
+            .where(*log_filters, ActionLog.action_type.in_(
+                ["lead_view", "click_write", "profile_click", "mark_not_lead"]))
+            .group_by(ActionLog.action_type)
+        )).fetchall()
+        events = {a: {"leads": int(d or 0), "total": int(t or 0)} for a, d, t in event_rows}
+
+        # === Quality dashboard: rejection stats ===
+        from app.models import FilterStat
+        fs_filters = [FilterStat.day >= since.date()]
+        if tenant_id is not None:
+            fs_filters.append(FilterStat.tenant_id == tenant_id)
+
+        rej_rows = (await session.execute(
+            select(FilterStat.source, func.sum(FilterStat.cnt))
+            .where(*fs_filters).group_by(FilterStat.source)
+        )).fetchall()
+        reject_by_source = {s: int(c or 0) for s, c in rej_rows}
+
+        reason_rows = (await session.execute(
+            select(FilterStat.reason, FilterStat.source, func.sum(FilterStat.cnt))
+            .where(*fs_filters).group_by(FilterStat.reason, FilterStat.source)
+            .order_by(func.sum(FilterStat.cnt).desc()).limit(10)
+        )).fetchall()
+        top_reasons = [{"reason": r, "source": s, "cnt": int(c)} for r, s, c in reason_rows]
+
+        blind_rows = (await session.execute(
+            select(FilterStat.chat_title, func.sum(FilterStat.cnt))
+            .where(*fs_filters).group_by(FilterStat.chat_title)
+            .order_by(func.sum(FilterStat.cnt).desc()).limit(6)
+        )).fetchall()
+        blind_zones = [{"chat": c or "—", "cnt": int(n)} for c, n in blind_rows]
+
+        # === Sources (chats) breakdown by deals ===
+        chat_rows = (await session.execute(
+            select(Lead.chat_title,
+                   func.count(Lead.id),
+                   func.sum(case((Lead.status == "deal", 1), else_=0)),
+                   func.coalesce(func.sum(case((Lead.status == "deal", Lead.deal_amount), else_=None)), 0))
+            .where(*lead_filters).group_by(Lead.chat_title)
+        )).fetchall()
+        sources = sorted(
+            [{"title": t or "—", "leads": int(l), "deals": int(d or 0), "sum": float(sm or 0)}
+             for t, l, d, sm in chat_rows],
+            key=lambda x: x["sum"], reverse=True)[:15]
+
+        # === Auto-suggestions from feedback analysis ===
+        from app.analyzer import analyze_feedback
+        try:
+            fb = await analyze_feedback(tenant_id)
+        except Exception:
+            fb = {}
+
+        # === Pipeline forecast: open leads weighted by status ===
+        open_weights = {"new": 0.05, "contacted": 0.15, "in_progress": 0.35, "interested": 0.5}
+        pipe_filters = [Lead.status.in_(list(open_weights.keys()))]
+        if tenant_id is not None:
+            pipe_filters.append(Lead.tenant_id == tenant_id)
+        pipe_rows = (await session.execute(
+            select(Lead.status, func.count(Lead.id))
+            .where(*pipe_filters).group_by(Lead.status)
+        )).fetchall()
+        pipe_counts = {s: int(c or 0) for s, c in pipe_rows}
+
+        avg_filters = [Lead.status == "deal", Lead.deal_amount.isnot(None)]
+        if tenant_id is not None:
+            avg_filters.append(Lead.tenant_id == tenant_id)
+        avg_deal = (await session.execute(
+            select(func.coalesce(func.avg(Lead.deal_amount), 0)).where(*avg_filters)
+        )).scalar() or 0
+        avg_deal = float(avg_deal)
+
+    total_leads = sum(status_counts.values())
+    not_lead_count = status_counts.get("deleted", 0) + events.get("mark_not_lead", {}).get("total", 0)
+
+    status_meta = [
+        ("new", "Новые"), ("contacted", "Контакт установлен"),
+        ("interested", "Заинтересованы"), ("in_progress", "В работе"),
+        ("deal", "Сделка"), ("not_interested", "Отказ клиента"),
+        ("missed_call", "Пропущенный звонок"), ("archive", "Архив"),
+        ("deleted", "Не лид / удалён"),
+    ]
+    stages = [{"key": k, "label": lbl, "count": status_counts.get(k, 0)} for k, lbl in status_meta]
+    max_stage = max((s["count"] for s in stages), default=0) or 1
+
+    open_weights = {"new": 0.05, "contacted": 0.15, "in_progress": 0.35, "interested": 0.5}
+    pipe_labels = {"new": "Новые", "contacted": "Контакт", "in_progress": "В работе",
+                   "interested": "Заинтересованы"}
+    pipeline_stages = []
+    for k, w in open_weights.items():
+        cnt = pipe_counts.get(k, 0)
+        pipeline_stages.append({
+            "key": k, "label": pipe_labels[k], "count": cnt, "weight": int(w * 100),
+            "value": cnt * w * avg_deal,
+        })
+    pipeline_total = sum(s["value"] for s in pipeline_stages)
+
+    steps = [
+        {"label": "Лиды создано", "value": total_leads},
+        {"label": "Карточек просмотрено (уник. лидов)", "value": events.get("lead_view", {}).get("leads", 0)},
+        {"label": "Открыт профиль Telegram", "value": events.get("profile_click", {}).get("leads", 0)},
+        {"label": "Клик «Написать в Telegram»", "value": events.get("click_write", {}).get("leads", 0)},
+        {"label": "Сделок закрыто", "value": deals_count},
+    ]
+    max_step = max((s["value"] for s in steps), default=0) or 1
+    prev_value = None
+    for s in steps:
+        s["pct"] = round(s["value"] / max_step * 100)
+        s["conv"] = round(s["value"] / prev_value * 100) if prev_value else None
+        prev_value = s["value"] or prev_value
+
+    ctx = await _template_ctx(user, stages=stages, steps=steps, max_stage=max_stage,
+                              days=days, deals_sum=deals_sum, not_lead_count=not_lead_count,
+                              reject_by_source=reject_by_source, top_reasons=top_reasons,
+                              blind_zones=blind_zones, sources=sources,
+                              suggestions=fb.get("suggestions", [])[:8],
+                              fb_message=fb.get("message", ""),
+                              fb_total=fb.get("total_feedback", 0),
+                              pipeline_stages=pipeline_stages, pipeline_total=pipeline_total,
+                              avg_deal=avg_deal)
+    return templates.TemplateResponse(request, "funnel.html", ctx)
+
+
+@app.post("/api/config/add-word")
+async def api_add_config_word(request: Request):
+    """Add a single word to tenant keywords/noise_keywords (from quality suggestions)."""
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    field = body.get("field")
+    word = (body.get("word") or "").strip().lower()
+    if field not in ("keywords", "noise_keywords") or not word or len(word) > 60:
+        raise HTTPException(status_code=400)
+    tenant_id = await _get_tenant_id(user)
+
+    async with async_session() as session:
+        repo = TenantRepository(session)
+        tenant = await (repo.get_by_id(tenant_id) if tenant_id is not None
+                        else repo.get_by_slug("default"))
+        if not tenant:
+            raise HTTPException(status_code=404)
+        cfg = dict(tenant.config or {})
+        words = [w for w in (cfg.get(field) or []) if isinstance(w, str)]
+        if word not in words:
+            words.append(word)
+            cfg[field] = words[:500]
+            tenant.config = cfg
+            flag_modified(tenant, "config")
+            await session.commit()
     return {"ok": True}
 
 
@@ -4083,7 +4800,7 @@ async def log_profile_click(request: Request, lead_id: int):
             meta={"ip": request.client.host if request.client else None},
         )
         await session.commit()
-    raise HTTPException(status_code=200)
+    return {"ok": True}
 
 
 @app.get("/sources", response_class=HTMLResponse)
@@ -4102,9 +4819,82 @@ async def sources_list(request: Request):
 
     from app.scrapers.cities import list_cities
     from datetime import datetime
+
+    from app.models import ChatSuggestion
+    async with async_session() as session:
+        pending_suggestions = (await session.execute(
+            select(ChatSuggestion)
+            .where(ChatSuggestion.tenant_id == tenant_id, ChatSuggestion.status == "pending")
+            .order_by(ChatSuggestion.members_count.desc())
+            .limit(20)
+        )).scalars().all()
+
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, sources=sources, csrf_token=csrf, cities=list_cities(), now=datetime.utcnow())
+    ctx = await _template_ctx(user, sources=sources, csrf_token=csrf, cities=list_cities(),
+                              now=datetime.utcnow(), chat_suggestions=pending_suggestions)
     return templates.TemplateResponse(request, "sources.html", ctx)
+
+
+@app.post("/api/chat-suggestions/{suggestion_id}/approve")
+async def api_chat_suggestion_approve(request: Request, suggestion_id: int):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403)
+    tenant_id = await _get_tenant_id(user)
+
+    from app.models import ChatSuggestion
+    async with async_session() as session:
+        sug = (await session.execute(
+            select(ChatSuggestion).where(
+                ChatSuggestion.id == suggestion_id,
+                ChatSuggestion.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not sug:
+            raise HTTPException(status_code=404)
+
+        repo = TenantRepository(session)
+        tenant = await (repo.get_by_id(tenant_id) if tenant_id is not None
+                        else repo.get_by_slug("default"))
+        if not tenant:
+            raise HTTPException(status_code=404)
+
+        url = f"https://t.me/{sug.username}"
+        cfg = dict(tenant.config or {})
+        chats = cfg.get("monitored_chats", "")
+        if isinstance(chats, list):
+            chat_list = [str(c) for c in chats]
+        else:
+            chat_list = [c.strip() for c in (chats or "").split(",") if c.strip()]
+        if url not in chat_list:
+            chat_list.append(url)
+        cfg["monitored_chats"] = ",".join(chat_list[:200])
+        tenant.config = cfg
+        flag_modified(tenant, "config")
+
+        sug.status = "approved"
+        await session.commit()
+    return {"ok": True, "url": url}
+
+
+@app.post("/api/chat-suggestions/{suggestion_id}/reject")
+async def api_chat_suggestion_reject(request: Request, suggestion_id: int):
+    user = await get_current_user(request)
+    if not user or user.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403)
+    tenant_id = await _get_tenant_id(user)
+
+    from app.models import ChatSuggestion
+    async with async_session() as session:
+        sug = (await session.execute(
+            select(ChatSuggestion).where(
+                ChatSuggestion.id == suggestion_id,
+                ChatSuggestion.tenant_id == tenant_id)
+        )).scalar_one_or_none()
+        if not sug:
+            raise HTTPException(status_code=404)
+        sug.status = "rejected"
+        await session.commit()
+    return {"ok": True}
 
 
 @app.post("/sources/add")
@@ -4287,13 +5077,26 @@ from fastapi import Header, HTTPException
 from typing import Optional
 
 
-def _verify_api_key(x_api_key: str = Header(None)):
-    """Verify API key from header."""
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
-    # In production, look up the key in the database
-    # For now, accept any non-empty key
-    return x_api_key
+_prediction_cache = {"data": None, "ts": 0, "tenant": None}
+
+
+def _verify_api_key(x_api_key: str = Header(None)) -> None:
+    """Verify static API key from env (API_KEY). No cookie sessions for machine access."""
+    if not settings.api_key:
+        raise HTTPException(status_code=503, detail="API disabled: API_KEY not configured on server")
+    if not x_api_key or x_api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+async def _api_tenant_id() -> Optional[int]:
+    """Tenant scope for external API calls (API_TENANT_ID env or first active tenant)."""
+    if settings.api_tenant_id:
+        return settings.api_tenant_id
+    async with async_session() as session:
+        t = (await session.execute(
+            select(Tenant).where(Tenant.is_active == True).order_by(Tenant.id).limit(1)
+        )).scalar_one_or_none()
+        return t.id if t else None
 
 
 @app.get("/api/v1/leads")
@@ -4308,24 +5111,25 @@ async def api_leads_list(
     """REST API: Get leads list."""
     _verify_api_key(x_api_key)
     
-    # Get tenant from API key (simplified - in production lookup from DB)
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    tenant_id = await _get_tenant_id(user)
-    
+    # Tenant scope for external API
+    tenant_id = await _api_tenant_id()
+
     async with async_session() as session:
         leads_repo = LeadRepository(session, tenant_id)
         q = select(Lead).where(Lead.status != "deleted")
-        
+        count_q = select(func.count(Lead.id)).where(Lead.status != "deleted")
+
         if tenant_id:
             q = q.where(Lead.tenant_id == tenant_id)
+            count_q = count_q.where(Lead.tenant_id == tenant_id)
         if status:
             q = q.where(Lead.status == status)
+            count_q = count_q.where(Lead.status == status)
         if chat:
             q = q.where(Lead.chat_title.contains(chat))
-        
+            count_q = count_q.where(Lead.chat_title.contains(chat))
+
+        total = (await session.execute(count_q)).scalar() or 0
         q = q.order_by(Lead.created_at.desc()).offset(offset).limit(limit)
         leads = (await session.execute(q)).scalars().all()
         
@@ -4358,12 +5162,7 @@ async def api_leads_get(
 ):
     """REST API: Get single lead."""
     _verify_api_key(x_api_key)
-    
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    tenant_id = await _get_tenant_id(user)
+    tenant_id = await _api_tenant_id()
     
     async with async_session() as session:
         leads_repo = LeadRepository(session, tenant_id)
@@ -4397,12 +5196,7 @@ async def api_leads_create(
 ):
     """REST API: Create a lead (for CRM integrations)."""
     _verify_api_key(x_api_key)
-    
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    tenant_id = await _get_tenant_id(user)
+    tenant_id = await _api_tenant_id()
     data = await request.json()
     
     async with async_session() as session:
@@ -4410,17 +5204,28 @@ async def api_leads_create(
             tenant_id=tenant_id,
             first_name=data.get("first_name"),
             last_name=data.get("last_name"),
+            username=data.get("username"),
+            user_id=data.get("user_id"),
             phone=data.get("phone"),
             message_text=data.get("message_text", ""),
             chat_title=data.get("chat_title", "API"),
-            lead_score=data.get("lead_score", 50),
-            urgency=data.get("urgency", "medium"),
+            lead_score=max(0, min(100, int(data.get("lead_score", 50)))),
+            urgency=data.get("urgency", "medium") if data.get("urgency") in ("low", "medium", "high") else "medium",
             status="new",
         )
         session.add(lead)
+        await session.flush()
+        session.add(LeadHistory(
+            lead_id=lead.id, tenant_id=tenant_id, user_id=None,
+            action="created", note="Создано через внешний API",
+        ))
         await session.commit()
         await session.refresh(lead)
-        
+
+        await _fire_webhooks(tenant_id, "lead_created", {
+            "lead_id": lead.id, "score": lead.lead_score, "chat": lead.chat_title,
+        })
+
         return {"id": lead.id, "status": "created"}
 
 
@@ -4432,30 +5237,36 @@ async def api_leads_update(
 ):
     """REST API: Update a lead status (for CRM integrations)."""
     _verify_api_key(x_api_key)
-    
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    tenant_id = await _get_tenant_id(user)
+    tenant_id = await _api_tenant_id()
     data = await request.json()
     
     async with async_session() as session:
         leads_repo = LeadRepository(session, tenant_id)
         lead = await leads_repo.get_by_id(lead_id)
-        
+
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found")
-        
+
+        valid_statuses = {"new", "contacted", "interested", "not_interested",
+                          "deal", "archive", "deleted", "missed_call", "in_progress"}
+        old_status = lead.status
         if "status" in data:
+            if data["status"] not in valid_statuses:
+                raise HTTPException(status_code=400,
+                                    detail=f"Invalid status. Allowed: {sorted(valid_statuses)}")
             lead.status = data["status"]
         if "phone" in data:
             lead.phone = data["phone"]
         if "lead_score" in data:
-            lead.lead_score = data["lead_score"]
-        
+            lead.lead_score = max(0, min(100, float(data["lead_score"])))
+
         await session.commit()
-        
+
+        if "status" in data and lead.status != old_status:
+            await _fire_webhooks(tenant_id, "status_change", {
+                "lead_id": lead.id, "from": old_status, "to": lead.status,
+            })
+
         return {"id": lead.id, "status": "updated"}
 
 
@@ -4466,12 +5277,7 @@ async def api_stats(
 ):
     """REST API: Get statistics (for dashboards)."""
     _verify_api_key(x_api_key)
-    
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    tenant_id = await _get_tenant_id(user)
+    tenant_id = await _api_tenant_id()
     
     async with async_session() as session:
         from sqlalchemy import func as sa_func

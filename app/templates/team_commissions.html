@@ -2,11 +2,14 @@
 {% block title %}Комиссии — Lead Hunter{% endblock %}
 {% block content %}
 <div class="page-toolbar">
-    <h1>Комиссии и бонусы</h1>
-    <form method="get" action="/team/commissions" style="display:flex;gap:8px">
-        <input type="month" name="period" value="{{ current_period }}" class="form-input">
-        <button type="submit" class="btn btn-outline">Показать</button>
-    </form>
+    <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Комиссии и бонусы</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+        <form method="get" action="/team/commissions" style="display:flex;gap:8px">
+            <input type="month" name="period" value="{{ current_period }}" class="form-input">
+            <button type="submit" class="btn btn-outline btn-sm">Показать</button>
+        </form>
+        <a href="/team/commissions/export/csv?period={{ current_period }}" class="btn btn-outline btn-sm">CSV</a>
+    </div>
 </div>
 
 <div class="stats-grid" style="margin-bottom:16px">
@@ -25,7 +28,14 @@
 </div>
 
 <div class="card">
-    <h3>Сводка по сотрудникам</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Сводка по сотрудникам</h3>
+    {% if not comm_data %}
+        <div style="text-align:center;padding:40px;color:var(--text-muted)">
+        <div style="font-size:36px;margin-bottom:12px"></div>
+        <div>Нет данных за этот период</div>
+        <div style="font-size:12px;margin-top:4px">Комиссии появятся когда сотрудники закроют сделки</div>
+    </div>
+    {% else %}
     <div class="table-wrap">
         <table class="data-table">
             <thead>
@@ -51,24 +61,25 @@
                     <td><strong>{{ "{:,.0f}".format(item.net) }} ₽</strong></td>
                 </tr>
                 {% endfor %}
-                {% if not comm_data %}
-                <tr><td colspan="7" class="empty-state">Нет данных за этот период</td></tr>
-                {% endif %}
             </tbody>
         </table>
     </div>
+    {% endif %}
 </div>
 
 <div class="card" style="margin-top:16px">
-    <h3>Начислить штраф</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Начислить штраф</h3>
     <form method="post" action="/team/commissions/add-penalty" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group" style="flex:1;min-width:200px">
             <label>Сотрудник</label>
             <select name="user_id" required>
-                {% for item in comm_data %}
-                <option value="{{ item.user.id }}">{{ item.user.full_name or item.user.username }}</option>
+                {% for uid, u in user_map.items() %}
+                <option value="{{ uid }}">{{ u.full_name or u.username }}</option>
                 {% endfor %}
+                {% if not user_map %}
+                <option disabled>Нет сотрудников</option>
+                {% endif %}
             </select>
         </div>
         <div class="form-group">
@@ -90,4 +101,26 @@
         <button type="submit" class="btn btn-danger">Начислить штраф</button>
     </form>
 </div>
+
+{% if penalties_list %}
+<div class="card">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Штрафы за период ({{ penalties_list|length }})</h3>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead><tr><th>Дата</th><th>Сотрудник</th><th>Причина</th><th>Сумма</th><th>Статус</th></tr></thead>
+            <tbody>
+                {% for p in penalties_list %}
+                <tr>
+                    <td>{{ (p.created_at|msk).strftime('%d.%m.%Y') if p.created_at else '—' }}</td>
+                    <td>{{ (user_map.get(p.user_id).full_name or user_map.get(p.user_id).username) if user_map.get(p.user_id) else '#' + p.user_id|string }}</td>
+                    <td>{{ p.reason }}{% if p.description %} — {{ p.description[:60] }}{% endif %}</td>
+                    <td style="color:var(--danger);font-weight:600">{{ "{:,.0f}".format(p.amount or 0) }} ₽</td>
+                    <td>{% if p.is_paid %}Выплачен{% else %}<span style="color:var(--warning)">Активен</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 {% endblock %}

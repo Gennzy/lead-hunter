@@ -1,141 +1,92 @@
 {% extends "base.html" %}
 {% block title %}Биллинг — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Биллинг и лимиты</h1>
-<p class="subtitle">Использование AI и лимиты тарифа</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Биллинг</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Управление тарифом и оплатой</p>
 
-{% if success %}
-<div id="successToast" class="toast-container"><div class="toast success"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>{{ success }}</div></div>
-<script>setTimeout(function(){var t=document.getElementById('successToast');if(t)t.remove()},4000)</script>
-{% endif %}
-{% if error %}
-<div id="errorToast" class="toast-container"><div class="toast error"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>{{ error }}</div></div>
-<script>setTimeout(function(){var t=document.getElementById('errorToast');if(t)t.remove()},5000)</script>
-{% endif %}
-
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-    <div class="card">
-        <h3 style="color:var(--primary)">Сегодня</h3>
-        <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px">
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">AI запросов</span>
-                    <span style="font-size:13px;font-weight:600">{{ ai_today }} <span style="color:var(--text-muted);font-weight:400">/ {{ max_ai_per_day }}</span></span>
-                </div>
-                {% set ai_pct = ((ai_today / max_ai_per_day) * 100) if max_ai_per_day > 0 else 0 %}
-                <div class="progress-bar"><div class="progress-fill {% if ai_pct >= 90 %}danger{% elif ai_pct >= 70 %}warn{% else %}ok{% endif %}" style="width:{{ ai_pct }}%"></div></div>
-                {% if ai_pct >= 90 %}<div class="limit-warn danger">⚠ Почти исчерпано</div>
-                {% elif ai_pct >= 70 %}<div class="limit-warn warn">⚡ Приближается к лимиту</div>{% endif %}
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">Токенов</span>
-                    <span style="font-size:13px;font-weight:600">{{ "{:,}".format(tokens_today) }} <span style="color:var(--text-muted);font-weight:400">/ {{ "{:,}".format(max_tokens_per_day) }}</span></span>
-                </div>
-                {% set tok_pct = ((tokens_today / max_tokens_per_day) * 100) if max_tokens_per_day > 0 else 0 %}
-                <div class="progress-bar"><div class="progress-fill {% if tok_pct >= 90 %}danger{% elif tok_pct >= 70 %}warn{% else %}ok{% endif %}" style="width:{{ tok_pct }}%"></div></div>
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">Стоимость</span>
-                    <span style="font-size:13px;font-weight:600">${{ "%.2f"|format(cost_today) }}</span>
-                </div>
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Текущий тариф</h3>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+        <div style="width:80px;height:80px;border-radius:16px;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px;font-weight:700">
+            {{ current_plan.name[0] }}
+        </div>
+        <div>
+            <div style="font-size:18px;font-weight:600">{{ current_plan.name }}</div>
+            <div style="font-size:14px;color:var(--text-muted)">
+                {% if current_plan.price > 0 %}
+                {{ "{:,.0f}".format(current_plan.price) }} ₽/мес
+                {% else %}
+                Бесплатно
+                {% endif %}
             </div>
         </div>
     </div>
-
-    <div class="card">
-        <h3 style="color:var(--primary)">Этот месяц</h3>
-        <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px">
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">AI запросов</span>
-                    <span style="font-size:13px;font-weight:600">{{ ai_month }}</span>
-                </div>
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">Токенов</span>
-                    <span style="font-size:13px;font-weight:600">{{ "{:,}".format(tokens_month) }}</span>
-                </div>
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">Стоимость</span>
-                    <span style="font-size:13px;font-weight:600">${{ "%.2f"|format(cost_month) }} <span style="color:var(--text-muted);font-weight:400">/ ${{ "%.2f"|format(max_cost_per_month) }}</span></span>
-                </div>
-                {% set cost_pct = ((cost_month / max_cost_per_month) * 100) if max_cost_per_month > 0 else 0 %}
-                <div class="progress-bar"><div class="progress-fill {% if cost_pct >= 90 %}danger{% elif cost_pct >= 70 %}warn{% else %}ok{% endif %}" style="width:{{ cost_pct }}%"></div></div>
-                {% if cost_pct >= 90 %}<div class="limit-warn danger">⚠ Стоимость почти исчерпана</div>{% endif %}
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;align-items:baseline">
-                    <span style="color:var(--text-secondary);font-size:12px">Лидов создано</span>
-                    <span style="font-size:13px;font-weight:600">{{ leads_month }} <span style="color:var(--text-muted);font-weight:400">/ {{ max_leads_per_month }}</span></span>
-                </div>
-                {% set leads_pct = ((leads_month / max_leads_per_month) * 100) if max_leads_per_month > 0 else 0 %}
-                <div class="progress-bar"><div class="progress-fill {% if leads_pct >= 90 %}danger{% elif leads_pct >= 70 %}warn{% else %}ok{% endif %}" style="width:{{ leads_pct }}%"></div></div>
-                {% if leads_pct >= 90 %}<div class="limit-warn danger">⚠ Лимит лидов исчерпан</div>{% endif %}
-            </div>
+    
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+        <div style="padding:12px;background:var(--bg-subtle);border-radius:8px">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Пользователи</div>
+            <div style="font-size:16px;font-weight:600">{{ user_count }} / {{ current_plan.max_users }}</div>
+        </div>
+        <div style="padding:12px;background:var(--bg-subtle);border-radius:8px">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Чаты</div>
+            <div style="font-size:16px;font-weight:600">{{ chat_count }} / {{ current_plan.max_chats }}</div>
+        </div>
+        <div style="padding:12px;background:var(--bg-subtle);border-radius:8px">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Лиды в месяц</div>
+            <div style="font-size:16px;font-weight:600">{{ leads_this_month }} / {{ current_plan.max_leads }}</div>
         </div>
     </div>
 </div>
 
 <div class="card" style="margin-bottom:20px">
-    <h3>Лимиты тарифа</h3>
-    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Настройте лимиты использования для вашего тенанта</p>
-
-    <form method="post" action="/settings/billing">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div class="form-group">
-                <label for="max_ai_requests_per_day">AI запросов в день</label>
-                <input type="number" id="max_ai_requests_per_day" name="max_ai_requests_per_day" value="{{ max_ai_per_day }}" min="1" max="10000">
-                <p style="color:var(--text-muted);font-size:11px;margin-top:4px">Максимум AI-запросов за сутки. При превышении — переключение на ключевые слова.</p>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Тарифные планы</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+        {% for plan_key, plan in plans.items() %}
+        <div style="border:2px solid {% if plan_key == current_plan_key %}var(--primary){% else %}var(--border){% endif %};border-radius:12px;padding:20px;position:relative">
+            {% if plan_key == current_plan_key %}
+            <div style="position:absolute;top:-10px;right:12px;background:var(--primary);color:#fff;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600">ТЕКУЩИЙ</div>
+            {% endif %}
+            <div style="font-size:18px;font-weight:600;margin-bottom:4px">{{ plan.name }}</div>
+            <div style="font-size:24px;font-weight:700;margin-bottom:16px">
+                {% if plan.price > 0 %}
+                {{ "{:,.0f}".format(plan.price) }} ₽<span style="font-size:14px;font-weight:400;color:var(--text-muted)">/мес</span>
+                {% else %}
+                Бесплатно
+                {% endif %}
             </div>
-
-            <div class="form-group">
-                <label for="max_tokens_per_day">Токенов в день</label>
-                <input type="number" id="max_tokens_per_day" name="max_tokens_per_day" value="{{ max_tokens_per_day }}" min="1000" max="10000000">
-                <p style="color:var(--text-muted);font-size:11px;margin-top:4px">Лимит токенов AI-модели в сутки.</p>
-            </div>
-
-            <div class="form-group">
-                <label for="max_cost_per_month_usd">Лимит стоимости в месяц ($)</label>
-                <input type="number" id="max_cost_per_month_usd" name="max_cost_per_month_usd" value="{{ max_cost_per_month }}" min="0" max="10000" step="0.01">
-                <p style="color:var(--text-muted);font-size:11px;margin-top:4px">Месячный бюджет на AI-анализ. При исчерпании — AI отключается.</p>
-            </div>
-
-            <div class="form-group">
-                <label for="max_leads_per_month">Лидов в месяц</label>
-                <input type="number" id="max_leads_per_month" name="max_leads_per_month" value="{{ max_leads_per_month }}" min="1" max="100000">
-                <p style="color:var(--text-muted);font-size:11px;margin-top:4px">Максимум новых лидов за месяц.</p>
-            </div>
+            <ul style="list-style:none;padding:0;margin:0 0 16px 0;font-size:13px">
+                <li style="padding:4px 0">✓ До {{ plan.max_users }} пользователей</li>
+                <li style="padding:4px 0">✓ До {{ plan.max_chats }} чатов</li>
+                <li style="padding:4px 0">✓ До {{ plan.max_leads }} лидов/мес</li>
+                <li style="padding:4px 0">{% if plan.ai_scoring %}✓{% else %}✗{% endif %} AI-скоринг</li>
+                <li style="padding:4px 0">{% if plan.api_access %}✓{% else %}✗{% endif %} API доступ</li>
+                <li style="padding:4px 0">{% if plan.custom_webhooks %}✓{% else %}✗{% endif %} Webhooks</li>
+                <li style="padding:4px 0">{% if plan.priority_support %}✓{% else %}✗{% endif %} Приоритетная поддержка</li>
+            </ul>
+            {% if plan_key != current_plan_key %}
+            <form method="post" action="/billing/subscribe">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="plan" value="{{ plan_key }}">
+                <button type="submit" class="btn {% if plan_key == 'enterprise' %}btn-primary{% else %}btn-secondary{% endif %}" style="width:100%">
+                    {% if plan.price > current_plan.price %}Перейти{% else %}Выбрать{% endif %}
+                </button>
+            </form>
+            {% endif %}
         </div>
-
-        <div class="form-group" style="margin-top:10px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                <input type="checkbox" name="ai_enabled" value="true" {% if ai_enabled %}checked{% endif %} style="width:18px;height:18px">
-                <span>AI-анализ включён</span>
-            </label>
-            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Если выключен — используется только анализ по ключевым словам (бесплатно)</p>
-        </div>
-
-        <button type="submit" class="btn btn-primary" style="margin-top:10px">Сохранить лимиты</button>
-    </form>
-</div>
-
-<div class="card">
-    <h3>Информация</h3>
-    <div style="font-size:13px;color:var(--text-secondary);line-height:1.8">
-        <p><strong>При достижении лимита:</strong></p>
-        <ul style="margin:8px 0 8px 20px">
-            <li>AI-запросов/токенов — анализ переключается на ключевые слова (бесплатно)</li>
-            <li>Стоимости — AI-анализ отключается до следующего месяца</li>
-            <li>Лидов — новые лиды не создаются до следующего месяца</li>
-        </ul>
-        <p style="margin-top:10px"><strong>Стоимость AI:</strong> ~$0.002 за 1000 токенов (gpt-4o-mini)</p>
+        {% endfor %}
     </div>
 </div>
+
+{% if current_plan_key == 'free' %}
+<div class="card" style="border-left:3px solid var(--primary)">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">🎁 Пробный период Pro</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+        Попробуйте Pro бесплатно на 14 дней. Без автоматического продления.
+    </p>
+    <form method="post" action="/billing/trial">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-primary">Активировать пробный период</button>
+    </form>
+</div>
+{% endif %}
 {% endblock %}

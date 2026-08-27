@@ -1,8 +1,9 @@
 """CIAN scraper for new apartment buyers who need renovation."""
 import logging
+import re
 import aiohttp
 from typing import Optional
-from .base import BaseScraper, ScrapedLead
+from .base import BaseScraper, ScrapedLead, retry_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -14,206 +15,118 @@ class CIANScraper(BaseScraper):
 
     def __init__(self, config: dict = None):
         super().__init__(config)
-        self.api_key = config.get("cian_api_key", "")
-        self.city = config.get("city", "moscow")
+        self.city = config.get("city", "Санкт-Петербург")
 
+    @retry_on_error(max_retries=2, backoff=3)
     async def search(self, query: str, city: str = "", limit: int = 50) -> list[ScrapedLead]:
         """Search CIAN for properties that might need renovation."""
         leads = []
+        target_city = city or self.city
 
-        # CIAN API for new buildings (novostroyki)
-        # People buying new builds often need renovation
         try:
             async with aiohttp.ClientSession() as session:
                 headers = {
-                    "User-Agent": "LeadHunter/1.0",
-                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ru-RU,ru;q=0.9",
                 }
 
-                # Search for new buildings without finishing (чистовая отделка)
-                params = {
-                    "city": city or self.city,
-                    "type": "newbuilding",
-                    "finishing": "no",  # No finishing = needs renovation
-                    "limit": min(limit, 100),
-                }
+                # Search for newbuilds without finishing
+                url = f"https://www.cian.ru/cat.php?deal_type=sale&engine_version=2&newobject%5B0%5D=1&offer_type=flat&p=1&region={self._get_region_id(target_city)}&room1=0&room2=1&room3=1&room4=1&without_finishing=1"
 
-                if self.api_key:
-                    headers["Authorization"] = f"Token {self.api_key}"
-
-                async with session.get(
-                    "https://api.cian.ru/search-offers/v2/search-offers-desktop/",
-                    headers=headers,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        leads = self._parse_cian_response(data)
+                        html = await resp.text()
+                        leads = self._parse_html(html)
                     else:
-                        self.logger.warning("CIAN API returned status %d", resp.status)
+                        self.logger.warning("CIAN returned status %d", resp.status)
 
         except Exception as e:
             self.logger.error("CIAN search failed: %s", e)
+            self.log_error(str(e))
 
         return leads[:limit]
 
+    @retry_on_error(max_retries=2, backoff=3)
     async def monitor(self, queries: list[str], cities: list[str] = None) -> list[ScrapedLead]:
         """Monitor CIAN for new properties without finishing."""
-        all_leads = []
+        target_city = (cities or [self.city])[0]
+        leads = await self.search("newbuild", city=target_city)
 
-        # Focus on new buildings without finishing
-        leads = await self.search("newbuilding", city=self.city)
-        all_leads.extend(leads)
-
-        # Also search for apartments with old finishing (likely need renovation)
-        leads2 = await self.search("old_house", city=self.city)
-        all_leads.extend(leads2)
-
-        # Deduplicate
-        seen = set()
-        unique_leads = []
-        for lead in all_leads:
-            if lead.source_id not in seen:
-                seen.add(lead.source_id)
-                unique_leads.append(lead)
-
-        self.logger.info("CIAN: found %d unique leads", len(unique_leads))
-        return unique_leads
-
-    async def search_newbuilds_without_finishing(self, city: str = "", limit: int = 50) -> list[ScrapedLead]:
-        """Search for new buildings without finishing (perfect renovation leads)."""
-        leads = []
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "User-Agent": "LeadHunter/1.0",
-                    "Accept": "application/json",
-                }
-
-                params = {
-                    "city": city or self.city,
-                    "type": "newbuilding",
-                    "finishing": "no",
-                    "limit": min(limit, 100),
-                }
-
-                async with session.get(
-                    "https://api.cian.ru/search-offers/v2/search-offers-desktop/",
-                    headers=headers,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        leads = self._parse_newbuild_response(data)
-
-        except Exception as e:
-            self.logger.error("CIAN newbuild search failed: %s", e)
-
-        return leads[:limit]
-
-    def _parse_cian_response(self, data: dict) -> list[ScrapedLead]:
-        """Parse CIAN API response."""
-        leads = []
-        items = data.get("data", {}).get("offers", [])
-
-        for item in items:
-            lead = self._parse_cian_offer(item)
-            if lead:
-                leads.append(lead)
-
+        self.logger.info("CIAN: found %d leads", len(leads))
         return leads
 
-    def _parse_newbuild_response(self, data: dict) -> list[ScrapedLead]:
-        """Parse newbuild response into renovation leads."""
+    def _parse_html(self, html: str) -> list[ScrapedLead]:
+        """Parse CIAN search results from HTML."""
         leads = []
-        items = data.get("data", {}).get("offers", [])
 
-        for item in items:
-            # People buying new builds without finishing = renovation opportunity
-            lead = self._create_renovation_lead_from_property(item)
-            if lead:
-                leads.append(lead)
+        # Extract offer cards from CIAN HTML
+        # CIAN uses data-name="CardsSerpItem" for offer cards
+        card_pattern = re.compile(
+            r'data-name="CardsSerpItem"[^>]*>(.*?)</div>\s*</div>\s*</div>',
+            re.DOTALL | re.IGNORECASE
+        )
 
-        return leads
+        # Also try extracting from JSON-LD or script tags
+        json_pattern = re.compile(r'"offerCard":\s*(\{.*?\})\s*[,}]', re.DOTALL)
 
-    def _parse_cian_offer(self, offer: dict) -> Optional[ScrapedLead]:
-        """Parse a CIAN offer into ScrapedLead."""
-        try:
-            offer_id = str(offer.get("id", ""))
-            title = offer.get("title", "")
-            description = offer.get("description", "")
-            price = offer.get("price", {})
-            url = offer.get("url", "")
+        # Fallback: extract links and titles
+        link_pattern = re.compile(
+            r'href="(https://www\.cian\.ru/buy[^"]*)"[^>]*>.*?<[^>]*>([^<]{10,})</[^>]*>',
+            re.DOTALL | re.IGNORECASE
+        )
 
-            # Get property details
-            rooms = offer.get("roomsCount", "")
-            area = offer.get("area", {})
-            district = offer.get("district", {}).get("name", "")
-            address = offer.get("address", "")
+        for match in link_pattern.finditer(html):
+            url = match.group(1)
+            title = match.group(2).strip()
 
-            text = f"{title}\n{description}\n\nРайон: {district}\nАдрес: {address}\nКомнат: {rooms}\nПлощадь: {area.get('value', '')} м²"
+            if not title or len(title) < 10:
+                continue
 
-            return ScrapedLead(
+            # Extract offer ID from URL
+            id_match = re.search(r'/(\d+)/', url)
+            offer_id = id_match.group(1) if id_match else str(hash(url))
+
+            # Check if this is a property without finishing
+            text_lower = title.lower()
+            if any(w in text_lower for w in ["без отделки", "чистовая", "предчистовая", "white box"]):
+                urgency = "high"
+            elif any(w in text_lower for w in ["новостройк", "новый дом", "сдача"]):
+                urgency = "medium"
+            else:
+                urgency = "low"
+
+            lead = ScrapedLead(
                 source="cian",
                 source_id=f"cian_{offer_id}",
-                source_url=url or f"https://www.cian.ru/buy-{offer_id}/",
-                text=text,
-                city=district or self.city,
-                category="apartment",
-                budget=self._extract_price(price),
-                urgency="medium",  # New buyers usually plan renovation soon
-                keywords_matched=["новостройка", "без отделки", "ремонт"],
-                raw_data=offer,
-            )
-        except Exception as e:
-            self.logger.error("Failed to parse CIAN offer: %s", e)
-            return None
-
-    def _create_renovation_lead_from_property(self, property_data: dict) -> Optional[ScrapedLead]:
-        """Create a renovation lead from property listing."""
-        try:
-            prop_id = str(property_data.get("id", ""))
-            address = property_data.get("address", "")
-            price = property_data.get("price", {})
-            rooms = property_data.get("roomsCount", "")
-            area = property_data.get("area", {}).get("value", "")
-            finishing = property_data.get("finishing", "")
-
-            # If property has no finishing or old finishing, it's a renovation opportunity
-            if finishing and finishing not in ["none", "no", "cosmetic"]:
-                return None
-
-            text = (
-                f"Новая покупка квартиры (возможно нужен ремонт)\n"
-                f"Адрес: {address}\n"
-                f"Комнат: {rooms}\n"
-                f"Площадь: {area} м²\n"
-                f"Отделка: {finishing or 'без отделки'}"
-            )
-
-            return ScrapedLead(
-                source="cian",
-                source_id=f"cian_new_{prop_id}",
-                source_url=f"https://www.cian.ru/buy-{prop_id}/",
-                text=text,
+                source_url=url,
+                text=title,
                 city=self.city,
                 category="apartment",
-                budget=self._extract_price(price),
-                urgency="high" if not finishing or finishing in ["none", "no"] else "medium",
-                keywords_matched=["новостройка", "без отделки", "покупка квартиры"],
-                raw_data=property_data,
+                urgency=urgency,
+                keywords_matched=["новостройка", "без отделки"],
+                raw_data={"title": title},
             )
-        except Exception as e:
-            self.logger.error("Failed to create renovation lead: %s", e)
-            return None
+            leads.append(lead)
 
-    def _extract_price(self, price_data: dict) -> Optional[float]:
-        """Extract price from CIAN price data."""
-        try:
-            if isinstance(price_data, dict):
-                return float(price_data.get("value", 0))
-            return float(price_data) if price_data else None
-        except (ValueError, TypeError):
-            return None
+        return leads
+
+    def _get_region_id(self, city: str) -> int:
+        """Get CIAN region ID by city name (supports Russian names)."""
+        from .cities import get_cian_region_id, CITY_MAP
+
+        # Try Russian name first
+        region = get_cian_region_id(city)
+        if region:
+            return region
+
+        # Fallback to English slug
+        regions = {
+            "sankt-peterburg": 2, "moskva": 1, "moscow": 1, "spb": 2,
+            "kazan": 4774, "novosibirsk": 4897, "ekaterinburg": 5036,
+            "nizhniy_novgorod": 4890, "chelyabinsk": 5061, "samara": 4956,
+            "ufa": 5073, "krasnoyarsk": 4882, "voronezh": 4703,
+            "perm": 4908, "volgograd": 4695,
+        }
+        return regions.get(city.lower(), 2)

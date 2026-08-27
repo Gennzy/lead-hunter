@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
 import os
 import re
 import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 from telethon import TelegramClient, events
 from telethon.tl.types import Channel, Chat
@@ -12,21 +14,88 @@ from app.models import Lead, User, LeadHistory, BlacklistedUser, ProcessedMessag
 from app.analyzer import analyze_message
 from app.bot import send_lead_notification
 from app.config_manager import TenantConfig
-from config import settings, AD_PATTERNS, AD_PHRASES
+from config import settings, AD_PATTERNS, AD_PHRASES, utcnow
 
 logger = logging.getLogger(__name__)
 
 # Global client is removed — use TelegramClientFactory instead
 
 _user_context: dict[int, list[str]] = {}
-MAX_CONTEXT = 5
+MAX_CONTEXT = 10
 MAX_CONTEXT_USERS = 500
 HISTORY_MONTHS = 2
 _CLEANUP_DAYS = 30
-_SCAN_SEMAPHORE = asyncio.Semaphore(3)
-
+_SCAN_SEMAPHORE = asyncio.Semaphore(1)
 
 NOISE_THRESHOLD = 3
+
+SCAN_STATE_FILE = Path("scan_state.json")
+
+
+async def _save_user_message(tenant_id: int, user_id: int, username: str, first_name: str,
+                              chat_title: str, message_id: int, text: str):
+    """Save user message to history for context analysis."""
+    if not user_id:
+        return
+    try:
+        async with async_session() as session:
+            from app.models import UserMessageHistory
+            msg = UserMessageHistory(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                username=username,
+                first_name=first_name,
+                chat_title=chat_title,
+                message_id=message_id,
+                text=text[:2000],
+            )
+            session.add(msg)
+            await session.commit()
+    except Exception:
+        pass
+
+
+async def _get_user_history(tenant_id: int, user_id: int, chat_title: str, limit: int = 10) -> list[str]:
+    """Get last N messages from user in this chat for context analysis."""
+    if not user_id:
+        return []
+    try:
+        async with async_session() as session:
+            from app.models import UserMessageHistory
+            from sqlalchemy import select as sel, desc
+            result = await session.execute(
+                sel(UserMessageHistory.text)
+                .where(
+                    UserMessageHistory.tenant_id == tenant_id,
+                    UserMessageHistory.user_id == user_id,
+                    UserMessageHistory.chat_title == chat_title,
+                )
+                .order_by(desc(UserMessageHistory.created_at))
+                .limit(limit)
+            )
+            messages = [row[0] for row in result.all()]
+            messages.reverse()
+            return messages
+    except Exception:
+        return []
+
+
+def _load_scan_state() -> dict:
+    if SCAN_STATE_FILE.exists():
+        try:
+            return json.loads(SCAN_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_scan_state(state: dict):
+    try:
+        tmp = SCAN_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(SCAN_STATE_FILE)  # atomic — no torn writes on concurrent scans
+    except Exception:
+        pass
 
 
 async def _transcribe_voice(message, tenant_id: int = None) -> Optional[str]:
@@ -71,15 +140,21 @@ async def _transcribe_voice(message, tenant_id: int = None) -> Optional[str]:
         estimated_cost = estimated_minutes * 0.006  # $0.006/min
         
         import aiohttp
+        if "groq" in settings.openai_base_url:
+            transcribe_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+            transcribe_model = "whisper-large-v3-turbo"
+        else:
+            transcribe_url = settings.openai_base_url.rstrip("/") + "/audio/transcriptions"
+            transcribe_model = "whisper-1"
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
             data = aiohttp.FormData()
             data.add_field("file", open(tmp_path, "rb"), filename="voice.ogg", content_type="audio/ogg")
-            data.add_field("model", "whisper-1")
+            data.add_field("model", transcribe_model)
             data.add_field("language", "ru")
             data.add_field("response_format", "text")
-            
-            async with session.post("https://api.openai.com/v1/audio/transcriptions",
+
+            async with session.post(transcribe_url,
                                      headers=headers, data=data) as resp:
                 if resp.status == 200:
                     text = await resp.text()
@@ -93,7 +168,7 @@ async def _transcribe_voice(message, tenant_id: int = None) -> Optional[str]:
                                 tenant_id=tenant_id,
                                 event_type="whisper_transcription",
                                 tokens_used=0,
-                                model_used="whisper-1",
+                                model_used=transcribe_model,
                                 cost_usd=estimated_cost,
                             )
                             await sess.commit()
@@ -230,7 +305,7 @@ def _is_ad(text: str) -> bool:
     return False
 
 
-async def _is_duplicate(user_id: int) -> bool:
+async def _is_duplicate(user_id: int, tenant_id: int = None) -> bool:
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.dedup_days)
     async with async_session() as session:
         bl = (await session.execute(
@@ -239,10 +314,11 @@ async def _is_duplicate(user_id: int) -> bool:
         if bl:
             return True
 
+        cond = and_(Lead.user_id == user_id, Lead.created_at >= cutoff)
+        if tenant_id:
+            cond = and_(cond, Lead.tenant_id == tenant_id)
         result = await session.execute(
-            select(Lead).where(
-                and_(Lead.user_id == user_id, Lead.created_at >= cutoff)
-            )
+            select(Lead).where(cond)
         )
         return result.scalar_one_or_none() is not None
 
@@ -363,6 +439,14 @@ async def _save_lead(
             urgency=analysis["urgency"],
             reason=analysis.get("reason", ""),
             recommended_message=analysis.get("recommended_message", ""),
+            phone=analysis.get("phone"),
+            hotness=analysis.get("hotness", "cold"),
+            ai_summary=analysis.get("ai_summary"),
+            next_action=analysis.get("next_action"),
+            budget=analysis.get("budget"),
+            timeline=analysis.get("timeline"),
+            readiness=analysis.get("readiness"),
+            city=analysis.get("city"),
             status="new",
             assigned_to=assigned_to,
         )
@@ -377,6 +461,13 @@ async def _save_lead(
             note="Автоматическое создание из Telegram",
         )
         session.add(history)
+
+        # Record assignment for response time tracking
+        if assigned_to:
+            from app.repositories import ResponseTimeRepository
+            resp_repo = ResponseTimeRepository(session, tenant_id)
+            await resp_repo.record_assignment(assigned_to, lead.id)
+
         await session.commit()
         await session.refresh(lead)
         return lead
@@ -415,12 +506,29 @@ async def _scan_history(client: TelegramClient, chat_entity, chat_title: str, ch
     keywords = tenant_config.keywords
     noise_keywords = tenant_config.noise_keywords
     min_score = tenant_config.min_lead_score
+    require_keywords = tenant_config.require_keywords
     await _cleanup_old_processed()
-    logger.info("Scanning history for %s (last %d months)...", chat_title, HISTORY_MONTHS)
+
+    scan_state = _load_scan_state()
+    chat_key = chat_username or chat_title
+    last_msg_id = scan_state.get(chat_key, 0)
+
+    is_first_scan = last_msg_id == 0
+    scan_label = "full history" if is_first_scan else f"incremental (since msg#{last_msg_id})"
+    logger.info("Scanning %s — %s...", chat_title, scan_label)
+
     count = 0
     leads_found = 0
-
-    date_from = datetime.now(timezone.utc) - timedelta(days=HISTORY_MONTHS * 30)
+    total_iterated = 0
+    ai_calls = 0
+    MAX_AI_CALLS_PER_CHAT = 200
+    skipped_text = 0
+    skipped_noise = 0
+    skipped_ad = 0
+    skipped_keywords = 0
+    skipped_processed = 0
+    max_seen_id = last_msg_id
+    analyzed_max_id = last_msg_id  # advance only past messages that went through analysis
 
     is_forum = getattr(chat_entity, "is_forum", False)
     topics = []
@@ -428,102 +536,136 @@ async def _scan_history(client: TelegramClient, chat_entity, chat_title: str, ch
     if is_forum:
         topics = await _get_forum_topics(client, chat_entity)
         if topics:
-            logger.info("Found %d topics in forum %s: %s", len(topics), chat_title, [t['title'] for t in topics])
-        else:
-            logger.info("Forum %s has is_forum=True but no topics found, scanning all messages", chat_title)
+            logger.info("Found %d topics in forum %s", len(topics), chat_title)
 
     topic_map = {t["id"]: t["title"] for t in topics} if topics else {}
 
-    async for message in client.iter_messages(
-        chat_entity,
-        offset_date=None,
-        reverse=True,
-    ):
-        if message.date:
-            msg_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=timezone.utc)
-            if msg_date < date_from:
+    iter_kwargs = {"reverse": True}
+    if not is_first_scan:
+        iter_kwargs["min_id"] = last_msg_id
+
+    try:
+        async for message in client.iter_messages(
+            chat_entity,
+            **iter_kwargs,
+        ):
+            total_iterated += 1
+            if message.id > max_seen_id:
+                max_seen_id = message.id
+
+            text = message.text or ""
+            
+            if not text and (message.voice or message.video_note):
+                transcribed = await _transcribe_voice(message, tenant_id=tenant_id)
+                if transcribed:
+                    text = transcribed
+
+            if not text:
+                skipped_text += 1
                 continue
 
-        text = message.text or ""
-        
-        # Handle voice messages
-        if not text and (message.voice or message.video_note):
-            transcribed = await _transcribe_voice(message, tenant_id=tenant_id)
-            if transcribed:
-                text = transcribed
+            if _is_noise(text, noise_keywords):
+                skipped_noise += 1
+                continue
 
-        if not text:
-            continue
+            if _is_ad(text):
+                skipped_ad += 1
+                continue
 
-        if _is_noise(text, noise_keywords):
-            continue
+            if require_keywords and not _matches_keywords(text, keywords):
+                skipped_keywords += 1
+                continue
 
-        if _is_ad(text):
-            continue
+            if not require_keywords and not _matches_keywords(text, keywords) and len(text) < 30:
+                skipped_text += 1
+                continue
 
-        if not _matches_keywords(text, keywords):
-            continue
+            if await _is_msg_processed(chat_title, message.id):
+                skipped_processed += 1
+                continue
 
-        if await _is_msg_processed(chat_title, message.id):
-            continue
+            await _mark_msg_processed(chat_title, message.id, tenant_id)
+            count += 1
 
-        await _mark_msg_processed(chat_title, message.id, tenant_id)
-        count += 1
+            thread_id = getattr(message, "message_thread_id", None)
+            topic_label = chat_title
+            if thread_id and thread_id in topic_map:
+                topic_label = f"{chat_title} → {topic_map[thread_id]}"
+            elif thread_id and is_forum:
+                topic_label = f"{chat_title} → Topic {thread_id}"
 
-        thread_id = getattr(message, "message_thread_id", None)
-        topic_label = chat_title
-        if thread_id and thread_id in topic_map:
-            topic_label = f"{chat_title} → {topic_map[thread_id]}"
-        elif thread_id and is_forum:
-            topic_label = f"{chat_title} → Topic {thread_id}"
+            sender = await message.get_sender()
+            user_info = _extract_user_info(sender)
+            user_id = user_info.get("user_id")
 
-        sender = await message.get_sender()
-        user_info = _extract_user_info(sender)
-        user_id = user_info.get("user_id")
+            if user_id and await _is_duplicate(user_id, tenant_id):
+                continue
 
-        if user_id and await _is_duplicate(user_id):
-            continue
+            if user_id:
+                _add_context(user_id, text)
+                context = _get_context(user_id)
+                await _save_user_message(tenant_id, user_id, user_info.get("username"),
+                                          user_info.get("first_name"), chat_title, message.id, text)
+                db_history = await _get_user_history(tenant_id, user_id, chat_title, limit=10)
+                if db_history and len(db_history) > 1:
+                    context = "\n".join(db_history[:-1])
+            else:
+                context = None
 
-        if user_id:
-            _add_context(user_id, text)
-            context = _get_context(user_id)
-        else:
-            context = None
+            reply_to_id = None
+            reply_to_text = None
+            if message.reply_to and getattr(message.reply_to, "reply_to_msg_id", None):
+                try:
+                    reply_to_id = message.reply_to.reply_to_msg_id
+                    reply_msg = await client.get_messages(chat_entity, ids=reply_to_id)
+                    if reply_msg and reply_msg.text:
+                        reply_to_text = reply_msg.text[:2000]
+                except Exception:
+                    pass
 
-        reply_to_id = None
-        reply_to_text = None
-        if message.reply_to and getattr(message.reply_to, "reply_to_msg_id", None):
-            try:
-                reply_to_id = message.reply_to.reply_to_msg_id
-                reply_msg = await client.get_messages(chat_entity, ids=reply_to_id)
-                if reply_msg and reply_msg.text:
-                    reply_to_text = reply_msg.text[:2000]
-            except Exception:
-                pass
+            if ai_calls >= MAX_AI_CALLS_PER_CHAT:
+                logger.info("AI call limit reached for %s (%d)", chat_title, MAX_AI_CALLS_PER_CHAT)
+                break
 
-        analysis = await analyze_message(text, topic_label, context, reply_to_text=reply_to_text,
-                                           tenant_config=tenant_config, tenant_id=tenant_id,
-                                           user_name=user_info.get("first_name"))
+            analysis = await analyze_message(text, topic_label, context, reply_to_text=reply_to_text,
+                                               tenant_config=tenant_config, tenant_id=tenant_id,
+                                               user_name=user_info.get("first_name"))
+            ai_calls += 1
+            analyzed_max_id = max(analyzed_max_id, message.id)
+            await asyncio.sleep(0.3)
 
-        if not analysis.get("is_lead"):
-            continue
-        if analysis["lead_score"] < min_score:
-            continue
+            if not analysis.get("is_lead"):
+                continue
+            if analysis["lead_score"] < min_score:
+                continue
 
-        lead = await _save_lead(
-            user_info, text, topic_label, chat_username, message.id, analysis,
-            reply_to_id=reply_to_id, reply_to_text=reply_to_text, tenant_id=tenant_id,
-        )
-        leads_found += 1
+            lead = await _save_lead(
+                user_info, text, topic_label, chat_username, message.id, analysis,
+                reply_to_id=reply_to_id, reply_to_text=reply_to_text, tenant_id=tenant_id,
+            )
+            leads_found += 1
 
-        logger.info(
-            "History lead: %s (score=%d) from %s",
-            user_info.get("username") or user_id,
-            analysis["lead_score"],
-            topic_label,
-        )
+            logger.info(
+                "History lead: %s (score=%d) from %s",
+                user_info.get("username") or user_id,
+                analysis["lead_score"],
+                topic_label,
+            )
 
-    logger.info("History scan complete for %s: %d messages checked, %d leads found", chat_title, count, leads_found)
+    except Exception as e:
+        logger.error("Error iterating messages for %s: %s", chat_title, e)
+
+    # If AI limit hit, don't advance past messages that were never analyzed —
+    # they'll be picked up (and cheaply skipped via ProcessedMessage) next scan.
+    save_id = analyzed_max_id if ai_calls >= MAX_AI_CALLS_PER_CHAT else max_seen_id
+    if save_id > last_msg_id:
+        scan_state[chat_key] = save_id
+        _save_scan_state(scan_state)
+
+    logger.info(
+        "Scan complete for %s: iterated=%d, noise=%d, ad=%d, no_kw=%d, processed=%d, ai=%d, leads=%d",
+        chat_title, total_iterated, skipped_noise, skipped_ad, skipped_keywords, skipped_processed, ai_calls, leads_found,
+    )
 
 
 async def _scan_chat(client: TelegramClient, chat: str, tenant_config: TenantConfig = None, tenant_id: int = None):
@@ -556,18 +698,30 @@ async def start_monitor(client: TelegramClient, chats: list[str], tenant_config:
     keywords = tenant_config.keywords
     noise_keywords = tenant_config.noise_keywords
     min_score = tenant_config.min_lead_score
+    require_keywords = tenant_config.require_keywords
 
     if not client.is_connected():
         await client.start()
 
     await asyncio.gather(*[_scan_chat(client, chat, tenant_config, tenant_id) for chat in chats])
 
-    @client.on(events.NewMessage(chats=chats))
+    resolved_entities = []
+    for chat in chats:
+        try:
+            if chat.startswith("https://t.me/") or chat.startswith("t.me/"):
+                username = chat.split("/")[-1]
+                entity = await client.get_entity(username)
+            else:
+                entity = await client.get_entity(chat)
+            resolved_entities.append(entity)
+        except Exception:
+            logger.warning("Could not resolve entity for live monitoring: %s", chat)
+
+    @client.on(events.NewMessage(chats=resolved_entities))
     async def handler(event):
         try:
             text = event.message.text or ""
             
-            # Handle voice messages
             if not text and (event.message.voice or event.message.video_note):
                 transcribed = await _transcribe_voice(event.message, tenant_id=tenant_id)
                 if transcribed:
@@ -582,15 +736,17 @@ async def start_monitor(client: TelegramClient, chats: list[str], tenant_config:
             if _is_ad(text):
                 return
 
-            if not _matches_keywords(text, keywords):
+            if require_keywords and not _matches_keywords(text, keywords):
+                return
+
+            if not require_keywords and not _matches_keywords(text, keywords) and len(text) < 30:
                 return
 
             sender = await event.get_sender()
             user_info = _extract_user_info(sender)
             user_id = user_info.get("user_id")
 
-            if user_id and await _is_duplicate(user_id):
-                logger.debug("Skipping duplicate user %s", user_id)
+            if user_id and await _is_duplicate(user_id, tenant_id):
                 return
 
             if user_id:
@@ -608,6 +764,13 @@ async def start_monitor(client: TelegramClient, chats: list[str], tenant_config:
 
             if is_forum and topic_id:
                 chat_title = f"{chat_title} → Topic {topic_id}"
+
+            await _save_user_message(tenant_id, user_id, user_info.get("username"),
+                                      user_info.get("first_name"), chat_title,
+                                      event.message.id, text)
+            db_history = await _get_user_history(tenant_id, user_id, chat_title, limit=10)
+            if db_history and len(db_history) > 1:
+                context = "\n".join(db_history[:-1])
 
             reply_to_id = None
             reply_to_text = None
@@ -629,6 +792,19 @@ async def start_monitor(client: TelegramClient, chats: list[str], tenant_config:
             if analysis["lead_score"] < min_score:
                 return
 
+            async with async_session() as session:
+                existing_q = select(Lead).where(
+                    Lead.tenant_id == tenant_id,
+                    Lead.user_id == user_info["user_id"],
+                    Lead.status.notin_(["deleted", "archive", "not_interested"]),
+                ).order_by(Lead.created_at.desc()).limit(1)
+                existing = (await session.execute(existing_q)).scalar_one_or_none()
+                if existing:
+                    age_hours = (utcnow() - existing.created_at.replace(tzinfo=None)).total_seconds() / 3600
+                    if age_hours < 72:
+                        logger.info("Skipping duplicate lead from user %s (existing #%d, %dh old)", user_info.get("username") or user_info["user_id"], existing.id, int(age_hours))
+                        return
+
             lead = await _save_lead(
                 user_info, text, chat_title, chat_username, event.message.id, analysis,
                 reply_to_id=reply_to_id, reply_to_text=reply_to_text, tenant_id=tenant_id,
@@ -646,5 +822,5 @@ async def start_monitor(client: TelegramClient, chats: list[str], tenant_config:
         except Exception:
             logger.exception("Error processing message")
 
-    logger.info("Monitoring %d chats via Telethon", len(chats))
+    logger.info("Monitoring %d chats via Telethon (%d resolved for live)", len(chats), len(resolved_entities))
     await client.run_until_disconnected()

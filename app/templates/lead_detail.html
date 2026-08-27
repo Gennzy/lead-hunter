@@ -15,30 +15,63 @@
 <div class="detail-layout">
     <div>
         <div class="card">
-            <h2>Сообщение</h2>
+            <h2 style="margin-bottom:16px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Сообщение</h2>
             {% if lead.reply_to_text %}
-            <div style="background:#faf6f1;border-left:3px solid #d4b896;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;color:#57534e">
-                <div style="font-size:11px;color:#a8a29e;margin-bottom:4px">Ответ на:</div>
+            <div style="background:var(--bg-subtle);border-left:3px solid var(--border);padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--text-secondary)">
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:500;text-transform:uppercase;letter-spacing:0.3px">Ответ на</div>
                 {{ lead.reply_to_text }}
             </div>
             {% endif %}
-            <div class="modal-msg">{{ lead.message_text }}</div>
+            <div style="font-size:14px;line-height:1.7;color:var(--text);white-space:pre-wrap">{{ lead.message_text }}</div>
             {% if lead.reason %}
-            <div class="modal-section modal-reason"><strong>Причина:</strong> {{ lead.reason }}</div>
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:13px;color:var(--text-secondary)">
+                <span style="color:var(--text-muted);font-weight:500">Причина:</span> {{ lead.reason }}
+            </div>
+            {% endif %}
+            {% if lead.ai_summary %}
+            <div style="margin-top:12px;padding:12px 16px;background:var(--bg-subtle);border-left:3px solid {{ lead.hotness_color() }};border-radius:0 6px 6px 0">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{{ lead.hotness_color() }}"></span>
+                    <span style="font-size:12px;font-weight:600;color:{{ lead.hotness_color() }}">{{ lead.hotness_label() }}</span>
+                    {% if lead.next_action and lead.next_action != 'wait' %}
+                    <span style="font-size:11px;color:var(--primary);font-weight:600">· {{ lead.next_action_label() }}</span>
+                    {% endif %}
+                </div>
+                <div style="font-size:13px;color:var(--text-secondary);line-height:1.5">{{ lead.ai_summary }}</div>
+            </div>
+            {% endif %}
+            {% if lead.budget or lead.timeline or lead.readiness %}
+            <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
+                {% if lead.budget %}
+                <span style="font-size:11px;padding:3px 8px;border-radius:4px;background:var(--bg-subtle);color:var(--text-muted)">
+                    Бюджет: {% if lead.budget == 'estimate' %}назвал{% elif lead.budget == 'high' %}высокий{% elif lead.budget == 'medium' %}средний{% else %}ограниченный{% endif %}
+                </span>
+                {% endif %}
+                {% if lead.timeline %}
+                <span style="font-size:11px;padding:3px 8px;border-radius:4px;background:var(--bg-subtle);color:var(--text-muted)">
+                    Сроки: {% if lead.timeline == 'asap' %}скоро{% elif lead.timeline == '1_3_months' %}1-3 мес{% elif lead.timeline == '3_6_months' %}3-6 мес{% else %}неясно{% endif %}
+                </span>
+                {% endif %}
+                {% if lead.readiness %}
+                <span style="font-size:11px;padding:3px 8px;border-radius:4px;background:var(--bg-subtle);color:var(--text-muted)">
+                    Готовность: {% if lead.readiness == 'ready' %}готов{% elif lead.readiness == 'planning' %}планирует{% else %}смотрит{% endif %}
+                </span>
+                {% endif %}
+            </div>
             {% endif %}
             {% if lead.recommended_message %}
-            <div class="modal-section modal-rec">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-                    <strong style="color:var(--success)">Рекомендуемое сообщение:</strong>
-                    <button onclick="navigator.clipboard.writeText(this.closest('.modal-rec').querySelector('.rec-text').textContent.trim()).then(function(){var b=event.target;b.textContent='Скопировано!';setTimeout(function(){b.textContent='Копировать'},1500)})" class="btn btn-sm btn-outline" style="font-size:11px;padding:3px 10px">Копировать</button>
+            <div style="margin-top:16px;padding:16px;background:var(--primary-light);border-left:3px solid var(--primary);border-radius:0 6px 6px 0">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                    <span style="color:var(--primary);font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px">Рекомендуемое сообщение</span>
+                    <button onclick="navigator.clipboard.writeText(this.closest('div[style]').querySelector('.rec-text').textContent.trim()).then(function(){var b=event.target;b.textContent='Скопировано';setTimeout(function(){b.textContent='Копировать'},1500)})" class="btn btn-sm btn-outline" style="font-size:11px;padding:4px 12px">Копировать</button>
                 </div>
-                <div class="rec-text" style="line-height:1.6">{{ lead.recommended_message }}</div>
+                <div class="rec-text" style="line-height:1.7;font-size:14px;color:var(--text)">{{ lead.recommended_message }}</div>
             </div>
             {% endif %}
         </div>
 
         <div class="card">
-            <h2>Заметки</h2>
+            <h2 style="margin-bottom:16px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Заметки</h2>
             {% for h in history %}
                 {% if h.action == 'note' %}
                 <div class="history-item">
@@ -64,54 +97,63 @@
 
     <div>
         <div class="card">
-            <h2>Информация</h2>
+            <h2 style="margin-bottom:16px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Информация</h2>
             <dl class="modal-meta">
-                <dt>ID</dt><dd>#{{ lead.id }}</dd>
-                <dt>Дата</dt><dd>{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }}</dd>
-                <dt>Чат</dt><dd>{{ lead.chat_title }}</dd>
+                <dt>ID</dt><dd style="font-weight:600;font-family:monospace">#{{ lead.id }}</dd>
+                <dt>Дата</dt><dd>{{ (lead.created_at|msk).strftime('%d.%m.%Y %H:%M') }} <span class="time-ago">({{ lead.created_at|time_ago }})</span></dd>
+                <dt>Чат</dt><dd style="font-weight:500">{{ lead.chat_title }}</dd>
                 <dt>Пользователь</dt>
                 <dd>
                     {% if lead.profile_url() and lead.profile_url() != '#' %}
-                    <a href="{{ lead.profile_url() }}" target="_blank" style="color:var(--primary)">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</a>
+                    <a href="{{ lead.profile_url() }}" target="_blank" onclick="fetch('/api/log-profile-click/{{ lead.id }}').catch(function(){})" style="color:var(--primary);font-weight:500;text-decoration:none">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</a>
                     {% else %}
-                    {{ lead.first_name or '' }} {{ lead.last_name or '' }}
+                    <span style="font-weight:500">{{ lead.first_name or '' }} {{ lead.last_name or '' }}</span>
                     {% endif %}
                     {% if lead.username %}
-                    <div style="color:var(--text-muted);font-size:12.5px">@{{ lead.username }}</div>
-                    {% elif lead.user_id %}
-                    <div style="color:var(--text-muted);font-size:12.5px">ID: {{ lead.user_id }}</div>
+                    <div style="color:var(--text-muted);font-size:12px;margin-top:2px">@{{ lead.username }}</div>
                     {% endif %}
                 </dd>
-                <dt>Score</dt>
-                <dd><span class="score-badge" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span></dd>
-                {% if ml_prediction %}
-                <dt>ML Прогноз</dt>
-                <dd>
-                    <div style="display:flex;align-items:center;gap:8px">
-                        <div style="width:60px;height:60px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:{% if ml_prediction.probability >= 70 %}#16a34a{% elif ml_prediction.probability >= 40 %}#d97706{% else %}#dc2626{% endif %};border:3px solid {% if ml_prediction.probability >= 70 %}#16a34a{% elif ml_prediction.probability >= 40 %}#d97706{% else %}#dc2626{% endif %}">
-                            {{ ml_prediction.probability|int }}%
-                        </div>
-                        <div style="font-size:12px;color:var(--text-secondary)">{{ ml_prediction.recommendation }}</div>
-                    </div>
-                </dd>
+                {% if lead.phone %}
+                <dt>Телефон</dt>
+                <dd><a href="tel:{{ lead.phone }}" style="color:var(--primary);font-weight:600;text-decoration:none;font-size:15px">{{ lead.phone }}</a></dd>
                 {% endif %}
+                <dt>Score</dt>
+                <dd>
+                    <span style="display:inline-block;background:{{ lead.score_color() }};color:#fff;font-size:13px;padding:3px 10px;border-radius:4px;font-weight:600;font-family:monospace">{{ lead.lead_score|int }}</span>
+                </dd>
+                <dt>Прогноз</dt>
+                <dd>
+                    {% if ml_prediction and ml_prediction.probability is not none %}
+                    {% set prob = ml_prediction.probability|int %}
+                    <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-weight:600;font-family:monospace;font-size:13px;background:{% if prob >= 70 %}var(--success){% elif prob >= 40 %}var(--warning){% else %}var(--danger){% endif %};color:#fff">{{ prob }}%</span>
+                    {% if ml_prediction.recommendation %}
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">{{ ml_prediction.recommendation }}</div>
+                    {% endif %}
+                    {% if ml_prediction.feature_importance %}
+                    <div style="margin-top:6px;font-size:11px;color:var(--text-muted)">
+                        {% for fname, contrib, fval in ml_prediction.feature_importance[:5] %}
+                        <span style="display:inline-block;margin-right:6px;margin-bottom:2px">{% if contrib > 0 %}<span style="color:var(--success)">+</span>{% else %}<span style="color:var(--danger)">{{ '%.2f'|format(contrib) }}</span>{% endif %}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <span style="color:var(--text-muted)">—</span>
+                    {% endif %}
+                </dd>
                 <dt>Срочность</dt>
                 <dd>
-                    {% if lead.urgency == 'high' %}🔥 Высокая
-                    {% elif lead.urgency == 'medium' %}⚡ Средняя
-                    {% else %}💤 Низкая{% endif %}
+                    <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:500;background:{% if lead.urgency == 'high' %}var(--danger){% elif lead.urgency == 'medium' %}var(--warning){% else %}var(--border){% endif %};color:{% if lead.urgency == 'low' %}var(--text-muted){% else %}#fff{% endif %}">
+                        {% if lead.urgency == 'high' %}Высокая{% elif lead.urgency == 'medium' %}Средняя{% else %}Низкая{% endif %}
+                    </span>
                 </dd>
                 <dt>Статус</dt>
                 <dd>
                     {% if user and user.role != 'viewer' %}
-                    <form method="post" action="/leads/{{ lead.id }}/status" class="inline-form" id="statusForm">
+                    <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <input type="hidden" name="deal_comment" value="" id="statusDealComment">
-                        <select name="status" onchange="if(this.value==='deal'){var c=prompt('Комментарий к сделке (обязательно):');if(c!==null&&c.trim()){document.getElementById('statusDealComment').value=c;this.form.submit()}else if(c!==null){alert('Комментарий обязателен');this.value='{{ lead.status }}'}else{this.value='{{ lead.status }}'}}else{this.form.submit()}" style="width:100%">
+                        <select name="status" onchange="this.form.submit()" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text)">
                             <option value="new" {% if lead.status == 'new' %}selected{% endif %}>Новый</option>
-                            <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контактировали</option>
-                            <option value="missed_call" {% if lead.status == 'missed_call' %}selected{% endif %}>Недозвон</option>
-                            <option value="in_progress" {% if lead.status == 'in_progress' %}selected{% endif %}>В работе</option>
+                            <option value="contacted" {% if lead.status == 'contacted' %}selected{% endif %}>Контакт</option>
                             <option value="interested" {% if lead.status == 'interested' %}selected{% endif %}>Заинтересован</option>
                             <option value="not_interested" {% if lead.status == 'not_interested' %}selected{% endif %}>Не интересует</option>
                             <option value="deal" {% if lead.status == 'deal' %}selected{% endif %}>Сделка</option>
@@ -119,17 +161,24 @@
                         </select>
                     </form>
                     {% else %}
-                    {{ lead.status }}
+                    <span class="tag tag-{{ 'success' if lead.status == 'deal' else 'warning' if lead.status == 'interested' else 'info' if lead.status == 'contacted' else 'neutral' }}">{{ lead.status }}</span>
                     {% endif %}
                 </dd>
-                {% if assignee %}
-                <dt>Ответственный</dt><dd>{{ assignee.full_name or assignee.username }}</dd>
+                <dt>Ответственный</dt>
+                <dd>{{ lead.assigned_user.full_name or lead.assigned_user.username if lead.assigned_user else '—' }}</dd>
+                {% if lead.deal_amount %}
+                <dt>Сумма сделки</dt>
+                <dd style="font-weight:700;color:var(--success);font-size:16px">{{ "{:,.0f}".format(lead.deal_amount|int) }} ₽</dd>
                 {% endif %}
             </dl>
         </div>
 
         {% if lead.profile_url() and lead.profile_url() != '#' %}
-        <a href="{{ lead.profile_url() }}" target="_blank" class="btn btn-primary" style="width:100%;margin-bottom:8px;text-decoration:none">Написать в Telegram</a>
+        <a href="{{ lead.profile_url() }}" target="_blank" onclick="fetch('/leads/{{ lead.id }}/log-write-click',{method:'POST'}).catch(function(){})" class="btn btn-primary" style="width:100%;margin-bottom:8px;text-decoration:none">Написать в Telegram</a>
+        {% endif %}
+
+        {% if lead.phone %}
+        <a href="tel:{{ lead.phone }}" class="btn btn-success" style="width:100%;margin-bottom:8px;text-decoration:none">Позвонить: {{ lead.phone }}</a>
         {% endif %}
 
         {% if not lead.username and lead.user_id %}
@@ -137,55 +186,74 @@
         {% endif %}
 
         {% if user and user.role != 'viewer' %}
+        <form method="post" action="/leads/{{ lead.id }}/phone" style="margin-bottom:8px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div style="display:flex;gap:4px">
+                <input type="text" name="phone" value="{{ lead.phone or '' }}" placeholder="Телефон" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg);color:var(--text)">
+                <button type="submit" class="btn btn-secondary btn-sm" style="font-size:11px">OK</button>
+            </div>
+        </form>
+        {% endif %}
         {% if user and user.role != 'viewer' %}
         <div class="card" style="margin-top:0;padding:14px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Быстрые действия</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Быстрые действия</div>
             <div style="display:flex;flex-wrap:wrap;gap:6px">
                 <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="contacted">
-                    <button type="submit" class="btn btn-sm {% if lead.status == 'contacted' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">📞 Связался</button>
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'contacted' %}btn-primary{% else %}btn-outline{% endif %}" style="font-size:11px">Связались</button>
                 </form>
                 <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="missed_call">
-                    <button type="submit" class="btn btn-sm {% if lead.status == 'missed_call' %}btn-warning{% else %}btn-outline{% endif %}" style="font-size:11px">📱 Недозвон</button>
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'missed_call' %}btn-warning{% else %}btn-outline{% endif %}" style="font-size:11px">Недозвон</button>
                 </form>
                 <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="in_progress">
-                    <button type="submit" class="btn btn-sm {% if lead.status == 'in_progress' %}btn-info{% else %}btn-outline{% endif %}" style="font-size:11px">⏳ В работе</button>
+                    <button type="submit" class="btn btn-sm {% if lead.status == 'in_progress' %}btn-info{% else %}btn-outline{% endif %}" style="font-size:11px">В работе</button>
                 </form>
                 <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline" id="dealForm">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="deal">
                     <input type="hidden" name="deal_comment" value="" id="dealCommentInput">
-                    <button type="button" onclick="var c=prompt('Комментарий к сделке (обязательно):');if(c!==null&&c.trim()){document.getElementById('dealCommentInput').value=c;this.closest('form').submit()}else if(c!==null){alert('Комментарий обязателен для статуса «Сделка»')}" class="btn btn-sm {% if lead.status == 'deal' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">💰 Сделка</button>
+                    <input type="hidden" name="deal_amount" value="" id="dealAmountInput">
+                    <button type="button" onclick="var c=prompt('Комментарий к сделке (обязательно):');if(c!==null&&c.trim()){var a=prompt('Сумма сделки (руб.):');if(a!==null){document.getElementById('dealCommentInput').value=c;document.getElementById('dealAmountInput').value=a.replace(/[^0-9]/g,'');this.closest('form').submit()}}else if(c!==null){alert('Комментарий обязателен для статуса «Сделка»')}" class="btn btn-sm {% if lead.status == 'deal' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">Сделка</button>
                 </form>
-                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline">
+                <form method="post" action="/leads/{{ lead.id }}/status" style="display:inline" id="notInterestedForm">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="status" value="not_interested">
-                    <button type="submit" class="btn btn-sm {% if lead.status == 'not_interested' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">✕ Не актуально</button>
+                    <input type="hidden" name="deal_comment" value="" id="rejectReasonInput">
+                    <button type="button" onclick="var reasons=['Цена не устраивает','Нашёл другого подрядчика','Не готов к ремонту','Не по теме','Спам','Дубликат','Другое'];var r=prompt('Причина отказа:\\n\\n' + reasons.map(function(v,i){return (i+1)+'. '+v}).join('\\n') + '\\n\\nВведите номер или текст:');if(r!==null&&r.trim()){document.getElementById('rejectReasonInput').value=r;this.closest('form').submit()}else if(r!==null){alert('Причина обязательна')}" class="btn btn-sm {% if lead.status == 'not_interested' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">Не актуально</button>
                 </form>
             </div>
         </div>
         {% endif %}
 
         <div class="card" style="margin-top:0;padding:14px">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">Оценить лид</div>
+            <div style="font-size:12px;font-weight:600;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Оценить лид</div>
             {% if lead.feedback %}
-            <div style="font-size:12.5px;color:{% if lead.feedback == 'useful' %}var(--success){% else %}var(--danger){% endif %};margin-bottom:6px">
-                {% if lead.feedback == 'useful' %}✓ Полезный{% else %}✗ Не полезный{% endif %}
+            <div style="font-size:12px;color:{% if lead.feedback == 'useful' %}var(--success){% else %}var(--danger){% endif %};margin-bottom:6px;font-weight:500">
+                {% if lead.feedback == 'useful' %}Полезный{% else %}Не полезный{% endif %}
                 {% if lead.feedback_reason %} · {{ lead.feedback_reason }}{% endif %}
             </div>
             {% endif %}
-            <form method="post" action="/leads/{{ lead.id }}/feedback" style="display:flex;gap:6px;flex-wrap:wrap">
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <form method="post" action="/leads/{{ lead.id }}/feedback" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" name="feedback" value="useful" class="btn btn-sm {% if lead.feedback == 'useful' %}btn-primary{% else %}btn-outline{% endif %}" style="font-size:11px">Полезный</button>
+                </form>
+                <form method="post" action="/leads/{{ lead.id }}/feedback" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="feedback" value="not_useful">
+                    <button type="submit" class="btn btn-sm {% if lead.feedback == 'not_useful' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">Не полезный</button>
+                </form>
+            </div>
+            {% if lead.feedback != 'useful' %}
+            <form method="post" action="/leads/{{ lead.id }}/feedback" style="margin-top:6px">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit" name="feedback" value="useful" class="btn btn-sm {% if lead.feedback == 'useful' %}btn-success{% else %}btn-outline{% endif %}" style="font-size:11px">✓ Полезный</button>
-                <button type="submit" name="feedback" value="not_useful" class="btn btn-sm {% if lead.feedback == 'not_useful' %}btn-danger{% else %}btn-outline{% endif %}" style="font-size:11px">✗ Не полезный</button>
-                {% if lead.feedback != 'useful' %}
                 <input type="hidden" name="feedback" value="not_useful">
-                <select name="reason" onchange="this.form.submit()" style="font-size:11px;padding:4px 8px;border:1px solid #d6d3d1;border-radius:6px">
+                <select name="reason" onchange="this.form.submit()" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-input);color:var(--text)">
                     <option value="">Причина...</option>
                     <option value="spam" {% if lead.feedback_reason == 'spam' %}selected{% endif %}>Спам</option>
                     <option value="off_topic" {% if lead.feedback_reason == 'off_topic' %}selected{% endif %}>Не по теме</option>
@@ -193,23 +261,87 @@
                     <option value="found_crew" {% if lead.feedback_reason == 'found_crew' %}selected{% endif %}>Клиент нашёл бригаду</option>
                     <option value="not_lead" {% if lead.feedback_reason == 'not_lead' %}selected{% endif %}>Не лид</option>
                 </select>
-                {% endif %}
             </form>
+            {% endif %}
         </div>
-        {% endif %}
 
         {% if user and user.role in ('admin', 'super_admin') %}
-        <form method="post" action="/leads/{{ lead.id }}/delete" style="margin-top:8px" onsubmit="return confirm('Удалить лид #{{ lead.id }}?')">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="btn btn-danger" style="width:100%">Удалить лид</button>
-        </form>
+        <div style="margin-top:8px; position:relative">
+            <button id="moreActionsBtn" class="btn btn-secondary" style="width:100%">Ещё действия ▾</button>
+            <div id="moreMenu" style="display:none; position:absolute; bottom:100%; left:0; right:0; z-index:100; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:4px; box-shadow:0 4px 12px rgba(0,0,0,0.3)">
+                <form method="post" action="/leads/{{ lead.id }}/delete" onsubmit="return confirm('Удалить лид #{{ lead.id }}? Это действие необратимо.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-danger" style="width:100%; font-size:12px">Удалить лид</button>
+                </form>
+            </div>
+        </div>
+        <script>
+        document.getElementById('moreActionsBtn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            var menu = document.getElementById('moreMenu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        });
+        document.addEventListener('click', function(e) {
+            var menu = document.getElementById('moreMenu');
+            if (menu && !e.target.closest('#moreMenu') && !e.target.closest('#moreActionsBtn')) {
+                menu.style.display = 'none';
+            }
+        });
+        </script>
         {% endif %}
     </div>
 </div>
 
+{% if appointments or follow_ups %}
+<div class="card" style="margin-top:16px">
+    <h2 style="margin-bottom:12px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Встречи и follow-up</h2>
+    
+    {% for apt in appointments %}
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="width:40px;height:40px;border-radius:8px;background:{% if apt.status == 'completed' %}var(--success){% elif apt.status == 'cancelled' %}var(--danger){% else %}var(--info){% endif %};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600">
+            {{ apt.scheduled_at.strftime('%d') }}<br>{{ apt.scheduled_at.strftime('%m') }}
+        </div>
+        <div style="flex:1">
+            <div style="font-weight:500;font-size:13px">{{ apt.title }}</div>
+            <div style="font-size:11px;color:var(--text-muted)">{{ apt.scheduled_at.strftime('%d.%m.%Y %H:%M') }} · {{ apt.status }}</div>
+        </div>
+        {% if apt.status == 'scheduled' and user and user.role != 'viewer' %}
+        <form method="post" action="/appointments/{{ apt.id }}/complete" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-success btn-sm" style="font-size:10px">✓</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    {% for fu in follow_ups %}
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="width:40px;height:40px;border-radius:8px;background:var(--warning);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600">
+            📞
+        </div>
+        <div style="flex:1">
+            <div style="font-weight:500;font-size:13px">Follow-up</div>
+            <div style="font-size:11px;color:var(--text-muted)">{{ fu.scheduled_at.strftime('%d.%m.%Y %H:%M') }}</div>
+        </div>
+    </div>
+    {% endfor %}
+
+    {% if user and user.role != 'viewer' %}
+    <form method="post" action="/leads/{{ lead.id }}/appointment" style="margin-top:10px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div style="display:flex;gap:6px">
+            <input type="datetime-local" name="scheduled_at" required style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-input);color:var(--text)">
+            <input type="text" name="title" placeholder="Замер/Встреча" required style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-input);color:var(--text)">
+            <button type="submit" class="btn btn-primary btn-sm" style="font-size:11px">+</button>
+        </div>
+    </form>
+    {% endif %}
+</div>
+{% endif %}
+
 {% if history %}
 <div class="card" style="margin-top:16px">
-    <h2>История изменений</h2>
+    <h2 style="margin-bottom:16px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">История изменений</h2>
     <div class="history-list">
         {% for h in history %}
             {% if h.action != 'note' %}
@@ -239,6 +371,22 @@
             {% endif %}
         {% endfor %}
     </div>
+</div>
+{% endif %}
+
+{% if author_messages %}
+<div class="card" style="margin-bottom:20px">
+    <h2 style="margin-bottom:4px;font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Все сообщения автора в чатах</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Последние {{ author_messages|length }} сообщений — контекст для общения</p>
+    {% for m in author_messages %}
+    <div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:2px">
+            <span style="color:var(--primary);font-size:11px;font-weight:600">{{ m.chat_title[:45] }}</span>
+            <span style="color:var(--text-muted);font-size:11px;flex-shrink:0">{{ (m.created_at|msk).strftime('%d.%m %H:%M') }}</span>
+        </div>
+        <div style="color:var(--text-secondary);white-space:pre-wrap">{{ m.text[:300] }}{% if m.text|length > 300 %}...{% endif %}</div>
+    </div>
+    {% endfor %}
 </div>
 {% endif %}
 {% endblock %}

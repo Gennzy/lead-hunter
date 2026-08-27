@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Команда — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Команда</h1>
-<p class="subtitle">Управление сотрудниками и статистика</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Команда</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Управление сотрудниками и статистика</p>
+<div style="margin-bottom:16px"><a href="/team/export/csv" class="btn btn-outline btn-sm">CSV</a></div>
 
 <div class="team-summary">
     <div class="team-summary-card">
@@ -17,7 +18,29 @@
         <div class="team-summary-number" style="color:var(--success)">{{ total_deals }}</div>
         <div class="team-summary-label">Сделок</div>
     </div>
+    <div class="team-summary-card">
+        <div class="team-summary-number" style="color:var(--warning)">{{ avg_response_time }}</div>
+        <div class="team-summary-label">Ср. время отклика</div>
+    </div>
 </div>
+
+{% if leaderboard %}
+<div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">🏆 Топ менеджеров</h3>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+        {% for m in leaderboard %}
+        <div style="flex:1;min-width:200px;background:var(--bg-subtle);border-radius:8px;padding:12px;text-align:center;border-left:3px solid {% if loop.index == 1 %}#ffd700{% elif loop.index == 2 %}#c0c0c0{% elif loop.index == 3 %}#cd7f32{% else %}var(--border){% endif %}">
+            <div style="font-size:24px;margin-bottom:4px">{% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}</div>
+            <div style="font-weight:600;font-size:14px">{{ m.name }}</div>
+            <div style="font-size:12px;color:var(--text-muted)">{{ m.deals }} сделок · {{ m.conversion }}% конверсия</div>
+            {% if m.revenue %}
+            <div style="font-size:13px;font-weight:600;color:var(--success);margin-top:4px">{{ "{:,.0f}".format(m.revenue|int) }} ₽</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
 
 {% for d in team_data %}
 <div class="team-member">
@@ -57,6 +80,22 @@
                 <div class="team-stat-value" style="color:var(--danger)">{{ d.high_leads }}</div>
                 <div class="team-stat-label">горячих</div>
             </div>
+            <div class="team-stat">
+                <div class="team-stat-value" style="color:var(--warning)">{{ d.conversion }}%</div>
+                <div class="team-stat-label">конверсия</div>
+            </div>
+            {% if d.avg_response_minutes %}
+            <div class="team-stat">
+                <div class="team-stat-value" style="font-size:14px">{{ d.avg_response_minutes }}мин</div>
+                <div class="team-stat-label">ср. отклик</div>
+            </div>
+            {% endif %}
+            {% if d.revenue %}
+            <div class="team-stat">
+                <div class="team-stat-value" style="color:var(--success);font-size:14px">{{ "{:,.0f}".format(d.revenue|int) }}₽</div>
+                <div class="team-stat-label">выручка</div>
+            </div>
+            {% endif %}
         </div>
     </div>
 

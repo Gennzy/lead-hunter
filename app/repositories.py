@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional, Sequence, Generic, TypeVar
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm import selectinload
 
 from sqlalchemy import select, func as sa_func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -494,7 +495,9 @@ class LeadHistoryRepository(BaseRepository):
         if self.tenant_id is not None:
             filters.append(LeadHistory.tenant_id == self.tenant_id)
         result = await self.session.execute(
-            select(LeadHistory).where(*filters).order_by(LeadHistory.created_at.desc())
+            select(LeadHistory)
+            .options(selectinload(LeadHistory.user))
+            .where(*filters).order_by(LeadHistory.created_at.desc())
         )
         return list(result.scalars().all())
 
@@ -1055,7 +1058,21 @@ class PenaltyRepository(BaseRepository):
         q = select(sqlfunc.sum(Penalty.amount)).where(Penalty.user_id == user_id)
         if self.tenant_id is not None:
             q = q.where(Penalty.tenant_id == self.tenant_id)
+        if period:
+            start = datetime.strptime(f"{period}-01", "%Y-%m-%d")
+            end = datetime(start.year + 1, 1, 1) if start.month == 12 else datetime(start.year, start.month + 1, 1)
+            q = q.where(Penalty.created_at >= start, Penalty.created_at < end)
         return (await self.session.execute(q)).scalar() or 0
+
+    async def list_for_period(self, period: str = None):
+        q = select(Penalty).order_by(Penalty.created_at.desc()).limit(50)
+        if self.tenant_id is not None:
+            q = q.where(Penalty.tenant_id == self.tenant_id)
+        if period:
+            start = datetime.strptime(f"{period}-01", "%Y-%m-%d")
+            end = datetime(start.year + 1, 1, 1) if start.month == 12 else datetime(start.year, start.month + 1, 1)
+            q = q.where(Penalty.created_at >= start, Penalty.created_at < end)
+        return list((await self.session.execute(q)).scalars().all())
 
 
 class WorkSessionRepository(BaseRepository):

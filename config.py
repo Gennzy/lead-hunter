@@ -1,8 +1,14 @@
 import os
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import List
+
+
+def utcnow() -> datetime:
+    """Return current UTC time as a naive datetime (backward-compatible with datetime.utcnow())."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 _ENV_FILE = Path(".env")
 
@@ -50,8 +56,15 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
 
     openai_api_key: str = ""
+    openai_api_key_2: str = ""
+    openai_base_url_2: str = ""
+    openai_model_2: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
+
+    vapid_private_key: str = ""
+    vapid_public_key: str = ""
+    vapid_email: str = "mailto:admin@leadhunter.local"
 
     # PostgreSQL connection
     postgres_user: str = "leadhunter"
@@ -63,13 +76,17 @@ class Settings(BaseSettings):
 
     web_host: str = "0.0.0.0"
     web_port: int = 8000
+    site_url: str = ""
     web_secret_key: str = ""
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_hours: int = 24
 
-    min_lead_score: int = 70
+    min_lead_score: int = 85
     dedup_days: int = 90
+    validator_min_score: int = 80
+    api_key: str = ""
+    api_tenant_id: int = 0
 
     monitored_chats: str = ""
 
@@ -98,6 +115,11 @@ class Settings(BaseSettings):
         if not self.monitored_chats:
             return []
         return [c.strip() for c in self.monitored_chats.split(",") if c.strip()]
+
+    def get_site_url(self) -> str:
+        if self.site_url:
+            return self.site_url.rstrip("/")
+        return f"http://{self.web_host}:{self.web_port}"
 
 
 settings = Settings()
@@ -259,6 +281,25 @@ KEYWORDS_LIST = [
     "ремонтно-строительная компания",
     "ремонтная компания", "строительная компания",
     "фирма по ремонту",
+
+    # Разговорные / неформальные
+    "кого знаете", "кто делает", "подскажите", "посоветуйте",
+    "сколько денег", "сколько это стоит", "во сколько обойдётся",
+    "во сколько обойдется", "какие цены", "ценник",
+    "наемный", "наёмный", "работяги", "рабочие",
+    "сделать", "сделать ремонт", "отремонтировать",
+    "въезжаю", "переезжаю", "купил квартиру", "купила квартиру",
+    "新房", "застройщик", "developer",
+    "cosmos", "cosmosdev",
+    "под ключ", "под ключ?",
+    "квартира", "квартиры", "квартир",
+    "комната", "комнаты", "комнату",
+    "стена", "стены", "стену",
+    "пол", "полы", "потолок", "потолки",
+    "дверь", "двери", "окно", "окна",
+    "ванна", "ванну", "туалет",
+    "кухня", "кухню",
+    "балкон", "лоджия",
 ]
 
 NOISE_KEYWORDS_LIST = [

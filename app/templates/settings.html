@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Настройки — Lead Hunter{% endblock %}
 {% block content %}
-<h1>Настройки</h1>
-<p class="subtitle">Управление чатами и конфигурацией</p>
+<h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Настройки</h1>
+<p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Управление чатами и конфигурацией</p>
 
 <div class="card" style="margin-bottom:20px">
-    <h3>Компания</h3>
+    <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Компания</h3>
     <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Основные настройки вашей компании</p>
 
     <form method="post" action="/settings/config">
@@ -52,6 +52,18 @@
                 <label for="escalation_hours">Эскалация через (часов)</label>
                 <input type="number" id="escalation_hours" name="escalation_hours" value="{{ tenant_config.get('escalation_hours', 4) }}" min="1" max="72" style="width:100px">
             </div>
+            <div class="form-group">
+                <label for="followup_hours">Follow-up: напоминать менеджеру через (часов без ответа)</label>
+                <input type="number" id="followup_hours" name="followup_hours" value="{{ tenant_config.get('followup_hours', 24) }}" min="4" max="168" style="width:100px">
+            </div>
+            <div class="form-group">
+                <label for="followup_stage2_days">Follow-up: шаблон №2 через (дней без ответа, 0 — выкл)</label>
+                <input type="number" id="followup_stage2_days" name="followup_stage2_days" value="{{ tenant_config.get('followup_stage2_days', 3) }}" min="0" max="30" style="width:100px">
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+                <input type="checkbox" id="followup_enabled" name="followup_enabled" value="true" {% if tenant_config.get('followup_enabled', true) %}checked{% endif %} style="width:18px;height:18px">
+                <label for="followup_enabled" style="margin:0">Follow-up цепочки включены</label>
+            </div>
         </div>
 
         <button type="submit" class="btn btn-primary">Сохранить</button>
@@ -70,19 +82,67 @@
             <div style="display:flex;gap:10px;align-items:center">
                 <input type="color" id="theme_color_preview" value="{{ tenant_config.get('theme_color', '#7c5832') }}" style="width:40px;height:36px;border:none;cursor:pointer" onchange="document.getElementById('theme_color').value=this.value">
                 <input type="text" id="theme_color" name="theme_color" value="{{ tenant_config.get('theme_color', '') }}" placeholder="#7c5832" pattern="^#[0-9a-fA-F]{6}$" style="width:120px">
+                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('theme_color').value='#7c5832';document.getElementById('theme_color_preview').value='#7c5832'">Сбросить цвет</button>
             </div>
         </div>
 
         <div class="form-group">
-            <label for="logo_url">URL логотипа</label>
-            <input type="url" id="logo_url" name="logo_url" value="{{ tenant_config.get('logo_url', '') }}" placeholder="https://example.com/logo.png">
-            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">Отображается в боковой панели вместо иконки по умолчанию</p>
+            <label>Логотип</label>
+            <div style="display:flex;gap:12px;align-items:center">
+                {% if tenant_config.get('logo_url') %}
+                <img src="{{ tenant_config.get('logo_url') }}" style="width:48px;height:48px;border-radius:8px;object-fit:contain;background:var(--bg-subtle)">
+                {% endif %}
+                <div style="flex:1">
+                    <input type="file" id="logo_file" accept="image/*" style="display:none" onchange="uploadFile(this, 'logo')">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('logo_file').click()">📁 Загрузить файл</button>
+                    <input type="hidden" id="logo_url" name="logo_url" value="{{ tenant_config.get('logo_url', '') }}">
+                    {% if tenant_config.get('logo_url') %}
+                    <button type="button" class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="document.getElementById('logo_url').value='';this.closest('div').querySelector('img')?.remove()">Удалить</button>
+                    {% endif %}
+                </div>
+            </div>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">PNG, JPG, GIF, SVG. Макс. 2 МБ</p>
         </div>
 
         <div class="form-group">
-            <label for="favicon_url">URL фавиконки</label>
-            <input type="url" id="favicon_url" name="favicon_url" value="{{ tenant_config.get('favicon_url', '') }}" placeholder="https://example.com/favicon.ico">
+            <label>Фавиконка</label>
+            <div style="display:flex;gap:12px;align-items:center">
+                {% if tenant_config.get('favicon_url') %}
+                <img src="{{ tenant_config.get('favicon_url') }}" style="width:32px;height:32px;border-radius:4px;object-fit:contain;background:var(--bg-subtle)">
+                {% endif %}
+                <div style="flex:1">
+                    <input type="file" id="favicon_file" accept="image/*" style="display:none" onchange="uploadFile(this, 'favicon')">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('favicon_file').click()">📁 Загрузить файл</button>
+                    <input type="hidden" id="favicon_url" name="favicon_url" value="{{ tenant_config.get('favicon_url', '') }}">
+                    {% if tenant_config.get('favicon_url') %}
+                    <button type="button" class="btn btn-outline btn-sm" style="color:var(--danger)" onclick="document.getElementById('favicon_url').value='';this.closest('div').querySelector('img')?.remove()">Удалить</button>
+                    {% endif %}
+                </div>
+            </div>
+            <p style="color:var(--text-secondary);font-size:11px;margin-top:4px">ICO, PNG, SVG. Макс. 2 МБ</p>
         </div>
+
+        <script>
+        async function uploadFile(input, purpose) {
+            const file = input.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('purpose', purpose);
+            try {
+                const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+                const data = await resp.json();
+                if (data.url) {
+                    document.getElementById(purpose + '_url').value = data.url;
+                    showToast('Файл загружен');
+                } else {
+                    showToast(data.error || 'Ошибка загрузки', 'error');
+                }
+            } catch(e) {
+                showToast('Ошибка загрузки', 'error');
+            }
+        }
+        </script>
 
         <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
@@ -124,7 +184,18 @@
 
 <div class="card" style="margin-bottom:20px">
     <h3>Прайс-лист (для автоматической оценки)</h3>
-    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Базовые цены для расчёта ориентировочной стоимости ремонта</p>
+    <p style="color:var(--text-secondary);margin-bottom:8px;font-size:13px">Базовые цены для расчёта ориентировочной стоимости ремонта</p>
+    <div style="margin-bottom:14px;display:flex;gap:8px">
+        <a href="/settings/prices/export" class="btn btn-outline btn-sm">Экспорт JSON</a>
+    </div>
+    <details style="margin-bottom:14px">
+        <summary style="cursor:pointer;font-size:13px;color:var(--primary)">Импорт прайса (JSON)</summary>
+        <form method="post" action="/settings/prices/import" style="margin-top:10px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <textarea name="data" rows="5" placeholder='{"bathroom": {"min": 8000, "max": 15000, "unit": "₽/м²"}}' style="width:100%;font-family:monospace;font-size:12px"></textarea>
+            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:8px">Импортировать</button>
+        </form>
+    </details>
 
     <form method="post" action="/settings/config/prices">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -170,7 +241,7 @@
 
 <div class="card">
     <h3>Мониторинг чатов</h3>
-    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Добавьте Telegram-чаты для отслеживания сообщений о ремонте</p>
+    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">Добавьте Telegram-чаты для отслеживания сообщений о ремонте. Выключенные чаты не мониторятся.</p>
 
     <form method="post" action="/settings/chats/add" class="add-chat-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -180,10 +251,21 @@
 
     <div class="chat-list">
         {% for chat in chats %}
-        <div class="chat-item">
-            <span style="font-weight:500;font-size:13.5px">{{ chat }}</span>
-            <form method="post" action="/settings/chats/remove" class="inline-form">
-                <input type="hidden" name="chat" value="{{ chat }}">
+        <div class="chat-item" style="display:flex;align-items:center;gap:10px;opacity:{% if chat.active %}1{% else %}0.5{% endif %}">
+            <form method="post" action="/settings/chats/toggle" class="inline-form" style="margin:0">
+                <input type="hidden" name="chat" value="{{ chat.url }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" style="background:none;border:none;cursor:pointer;font-size:18px;padding:0" title="{% if chat.active %}Выключить{% else %}Включить{% endif %}">
+                    {% if chat.active %}🟢{% else %}⚪{% endif %}
+                </button>
+            </form>
+            <span style="flex:1;font-weight:500;font-size:13.5px">{{ chat.url }}</span>
+            {% set lead_count = chat_lead_counts.get(chat.url, 0) %}
+            {% if lead_count > 0 %}
+            <span style="font-size:11px;color:var(--text-muted);background:var(--bg-subtle);padding:2px 8px;border-radius:10px">{{ lead_count }} лидов</span>
+            {% endif %}
+            <form method="post" action="/settings/chats/remove" class="inline-form" style="margin:0">
+                <input type="hidden" name="chat" value="{{ chat.url }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit" class="btn btn-danger btn-sm">Удалить</button>
             </form>
