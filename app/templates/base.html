@@ -47,7 +47,17 @@
     <aside class="sidebar" id="sidebar">
         <div class="logo">
             {% if logo_url %}
-            <img src="{{ logo_url }}" alt="Logo" style="width:32px;height:32px;border-radius:6px;object-fit:contain;">
+            <img src="{{ logo_url }}" alt="Logo" style="width:32px;height:32px;border-radius:6px;object-fit:contain;" onerror="this.style.display='none';document.getElementById('logoFallback').style.display='flex'">
+            <div id="logoFallback" class="logo-icon" style="display:none">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <circle cx="12" cy="12" r="8"/>
+                    <circle cx="12" cy="12" r="2"/>
+                    <line x1="12" y1="2" x2="12" y2="6"/>
+                    <line x1="12" y1="18" x2="12" y2="22"/>
+                    <line x1="2" y1="12" x2="6" y2="12"/>
+                    <line x1="18" y1="12" x2="22" y2="12"/>
+                </svg>
+            </div>
             {% else %}
             <div class="logo-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
