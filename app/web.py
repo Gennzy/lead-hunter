@@ -3092,10 +3092,11 @@ async def contracts_page(request: Request):
         contract_repo = ManagerContractRepository(session, tenant_id)
         contracts = await contract_repo.list_contracts(include_expired=True)
 
+    csrf = generate_csrf_token(_get_session_id(request))
     ctx = await _template_ctx(
         current_user,
         all_users=all_users, user_map=user_map,
-        contracts=contracts,
+        contracts=contracts, csrf_token=csrf,
     )
     return templates.TemplateResponse(request, "contracts.html", ctx)
 
