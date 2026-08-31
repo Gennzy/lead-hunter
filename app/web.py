@@ -3005,7 +3005,7 @@ async def confirm_evidence(
     if not current_user or current_user.role != "super_admin":
         raise HTTPException(status_code=403)
 
-    if not validate_csrf_token(_get_session_id(request), csrf_token):
+    if not validate_csrf_token(csrf_token):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     tenant_id = await _get_tenant_id(current_user)
@@ -3118,7 +3118,7 @@ async def create_contract(
     if not current_user or current_user.role != "super_admin":
         raise HTTPException(status_code=403)
 
-    if not validate_csrf_token(_get_session_id(request), csrf_token):
+    if not validate_csrf_token(csrf_token):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     tenant_id = await _get_tenant_id(current_user)
@@ -3261,7 +3261,7 @@ async def approve_payment(
     if not current_user or current_user.role != "super_admin":
         raise HTTPException(status_code=403)
 
-    if not validate_csrf_token(_get_session_id(request), csrf_token):
+    if not validate_csrf_token(csrf_token):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     tenant_id = await _get_tenant_id(current_user)
@@ -3288,7 +3288,7 @@ async def mark_paid(
     if not current_user or current_user.role != "super_admin":
         raise HTTPException(status_code=403)
 
-    if not validate_csrf_token(_get_session_id(request), csrf_token):
+    if not validate_csrf_token(csrf_token):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     tenant_id = await _get_tenant_id(current_user)
