@@ -701,6 +701,7 @@ async def leads_list(
     urgency_f: str = Query(None, alias="urgency"),
     manager_f: str = Query(None, alias="manager"),
     noresp: int = Query(None, ge=1, le=90),
+    feedback_f: str = Query(None, alias="feedback"),
     page: int = Query(1, ge=1),
 ):
     user = await get_current_user(request)
@@ -730,7 +731,10 @@ async def leads_list(
 
         # Build extra filters for the repository
         extra_filters = []
-        if lead_status:
+        if lead_status == "not_lead":
+            extra_filters.append(Lead.status == "deleted")
+            extra_filters.append(Lead.feedback_reason.in_(["not_lead", "off_topic"]))
+        elif lead_status:
             extra_filters.append(Lead.status == lead_status)
         if chat:
             extra_filters.append(Lead.chat_title == chat)
@@ -769,7 +773,22 @@ async def leads_list(
                 Lead.created_at <= nr_cutoff,
             ))
 
-        if lead_status == "deleted":
+        if feedback_f == "useful":
+            extra_filters.append(Lead.feedback == "useful")
+        elif feedback_f == "not_useful":
+            extra_filters.append(Lead.feedback == "not_useful")
+            extra_filters.append(Lead.feedback_reason.notin_(["not_lead", "off_topic"]))
+        elif feedback_f == "not_lead":
+            extra_filters.append(Lead.feedback == "not_useful")
+            extra_filters.append(Lead.feedback_reason.in_(["not_lead", "off_topic"]))
+
+        if lead_status == "not_lead":
+            count_filters = extra_filters.copy()
+            if tenant_id is not None:
+                count_filters.append(Lead.tenant_id == tenant_id)
+            from sqlalchemy import func as sa_func
+            total = (await session.execute(select(sa_func.count(Lead.id)).where(*count_filters))).scalar() or 0
+        elif lead_status == "deleted":
             count_filters = [Lead.status == "deleted"] + extra_filters
             if tenant_id is not None:
                 count_filters.append(Lead.tenant_id == tenant_id)
@@ -780,8 +799,9 @@ async def leads_list(
 
         # Build query
         q = select(Lead)
-        if not lead_status:
-            q = q.where(Lead.status != "deleted")
+        if not lead_status or lead_status == "not_lead":
+            if lead_status != "not_lead":
+                q = q.where(Lead.status != "deleted")
         if tenant_id is not None:
             q = q.where(Lead.tenant_id == tenant_id)
         if manager_id:
@@ -818,6 +838,14 @@ async def leads_list(
             select(Lead.status, func.count(Lead.id)).where(*sc_filters).group_by(Lead.status)
         )).fetchall()
         status_counts = {s: c for s, c in sc_rows}
+
+        # Not-lead count (deleted + feedback_reason in not_lead, off_topic)
+        nl_filters = [Lead.status == "deleted", Lead.feedback_reason.in_(["not_lead", "off_topic"])]
+        if tenant_id is not None:
+            nl_filters.append(Lead.tenant_id == tenant_id)
+        if manager_id:
+            nl_filters.append(Lead.assigned_to == manager_id)
+        not_lead_count = (await session.execute(select(func.count(Lead.id)).where(*nl_filters))).scalar() or 0
 
         # Available chats
         ch_filters = [Lead.status != "deleted"]
@@ -882,11 +910,13 @@ async def leads_list(
         qs_parts.append(("manager", manager_f))
     if noresp:
         qs_parts.append(("noresp", noresp))
+    if feedback_f:
+        qs_parts.append(("feedback", feedback_f))
     qs_nostatus = ("&" + urlencode(qs_parts)) if qs_parts else ""
     csv_qs = urlencode((([("status", lead_status)] if lead_status else []) + qs_parts))
 
     csrf = generate_csrf_token(_get_session_id(request))
-    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=utcnow(), new_week=new_week, repeat_info=repeat_info, managers_list=managers_list, score_min=score_min, urgency_f=urgency_f or "", manager_f=manager_f or "", noresp=noresp, qs_nostatus=qs_nostatus, csv_qs=csv_qs)
+    ctx = await _template_ctx(user, leads=all_leads, total=total, page=page, total_pages=total_pages, status_filter=lead_status or "", chat_filter=chat or "", search=search or "", date_from=date_from or "", date_to=date_to or "", sort=sort or "", status_counts=status_counts, available_chats=available_chats, csrf_token=csrf, now=utcnow(), new_week=new_week, repeat_info=repeat_info, managers_list=managers_list, score_min=score_min, urgency_f=urgency_f or "", manager_f=manager_f or "", noresp=noresp, feedback_f=feedback_f or "", not_lead_count=not_lead_count, qs_nostatus=qs_nostatus, csv_qs=csv_qs)
     return templates.TemplateResponse(request, "leads.html", ctx)
 
 

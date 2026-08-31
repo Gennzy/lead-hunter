@@ -20,6 +20,10 @@
 .kanban-card-score{font-weight:700;font-size:10px;padding:1px 5px;border-radius:var(--r-full);color:#fff}
 .kanban-card-phone{color:var(--success);font-weight:600;font-size:10px}
 .kanban-card-manager{color:var(--primary);font-size:9px}
+.kanban-card-feedback{font-size:10px;padding:1px 5px;border-radius:var(--r-full);font-weight:600;line-height:1}
+.kanban-card-feedback.feedback-useful{background:#16a34a20;color:#16a34a}
+.kanban-card-feedback.feedback-not_useful{background:#dc262620;color:#dc2626}
+.kanban-card-feedback.feedback-not_lead{background:#6b728020;color:#6b7280}
 .filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
 .filter-bar input,.filter-bar select{padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-input);color:var(--text)}
 .filter-bar input{min-width:200px}
@@ -59,6 +63,12 @@
         <option value="warm">Тёплые</option>
         <option value="cold">Холодные</option>
     </select>
+    <select id="filterFeedback" onchange="filterKanban()">
+        <option value="">Все лиды</option>
+        <option value="useful">✅ Полезные</option>
+        <option value="not_useful">❌ Не полезные</option>
+        <option value="not_lead">🚫 Не лиды</option>
+    </select>
     <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:4px">
         <input type="checkbox" id="filterUnassigned" onchange="filterKanban()"> Без менеджера
     </label>
@@ -89,8 +99,14 @@
                  data-phone="{{ (lead.phone or '')|e }}"
                  data-assigned="{{ (lead.assigned_user.full_name if lead.assigned_to and lead.assigned_user else '')|e }}"
                  data-hotness="{{ lead.hotness or 'cold' }}"
-                 data-score="{{ lead.lead_score|int }}">
+                 data-feedback="{{ lead.feedback or '' }}"
+                 data-feedback-reason="{{ lead.feedback_reason or '' }}">
                 <div class="kanban-card-name">{{ (lead.first_name or lead.username or 'Лид #' ~ lead.id)[:25] }}</div>
+                {% if lead.feedback %}
+                <span class="kanban-card-feedback feedback-{{ lead.feedback }}" title="{{ lead.feedback_reason or ('Полезный' if lead.feedback == 'useful' else 'Не полезный') }}">
+                    {% if lead.feedback == 'useful' %}✅{% elif lead.feedback_reason == 'not_lead' or lead.feedback_reason == 'off_topic' %}🚫{% else %}❌{% endif %}
+                </span>
+                {% endif %}
                 <div class="kanban-card-meta">
                     <span class="kanban-card-score" style="background:{{ lead.score_color() }}">{{ lead.lead_score|int }}</span>
                     <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{{ lead.hotness_color() }}" title="{{ lead.hotness_label() }}"></span>
@@ -135,6 +151,7 @@ function filterKanban() {
     var score = document.getElementById('filterScore').value;
     var urgency = document.getElementById('filterUrgency').value;
     var hotness = document.getElementById('filterHotness').value;
+    var feedback = document.getElementById('filterFeedback').value;
     var unassigned = document.getElementById('filterUnassigned').checked;
     
     document.querySelectorAll('.kanban-card').forEach(function(card) {
@@ -158,6 +175,14 @@ function filterKanban() {
         if (urgency && card.dataset.urgency !== urgency) show = false;
         
         if (hotness && card.dataset.hotness !== hotness) show = false;
+        
+        if (feedback) {
+            var fb = card.dataset.feedback || '';
+            var fbReason = card.dataset.feedbackReason || '';
+            if (feedback === 'useful' && fb !== 'useful') show = false;
+            if (feedback === 'not_useful' && fb !== 'not_useful') show = false;
+            if (feedback === 'not_lead' && !(fb === 'not_useful' && (fbReason === 'not_lead' || fbReason === 'off_topic'))) show = false;
+        }
         
         if (unassigned && card.dataset.assigned) show = false;
         
@@ -300,7 +325,7 @@ function filterKanban() {
         if (!card || card.classList.contains('dragging')) return;
         try {
             var ds = card.dataset;
-            var data = {id:ds.id, name:ds.name, score:parseInt(ds.score), urgency:ds.urgency, chat:ds.chat, msg:ds.msg, date:ds.date, reason:ds.reason, status:ds.status, statusLabel:ds.statusLabel, username:ds.username, user_id:ds.userid, profile:ds.profile};
+            var data = {id:ds.id, name:ds.name, score:parseInt(ds.score), urgency:ds.urgency, chat:ds.chat, msg:ds.msg, date:ds.date, reason:ds.reason, status:ds.status, statusLabel:ds.statusLabel, username:ds.username, user_id:ds.userid, profile:ds.profile, feedback:ds.feedback, feedbackReason:ds.feedbackReason};
             var urgencyLabel = {high:'🔥 Высокая',medium:'⚡ Средняя',low:'💤 Низкая'};
             document.getElementById('modalTitle').textContent = 'Лид #' + data.id + ' — ' + data.name;
             var html = '<div style="display:flex;flex-direction:column;gap:12px">';
@@ -308,6 +333,12 @@ function filterKanban() {
             html += '<span class="score-badge" style="background:' + (data.score>=90?'#c45a5a':data.score>=80?'#c49a3c':data.score>=70?'#5a8f8f':'#5a8f6a') + ';font-size:14px;padding:3px 10px">' + data.score + '</span>';
             html += '<span class="urgency-badge urgency-' + data.urgency + '">' + (urgencyLabel[data.urgency]||data.urgency) + '</span>';
             html += '<span class="status-badge status-' + data.status + '">' + esc(STATUS_LABELS[data.status] || data.statusLabel || data.status) + '</span>';
+            if (data.feedback) {
+                var fbLabel = data.feedback === 'useful' ? '✅ Полезный' : (data.feedbackReason === 'not_lead' || data.feedbackReason === 'off_topic') ? '🚫 Не лид' : '❌ Не полезный';
+                var fbColor = data.feedback === 'useful' ? '#16a34a' : '#dc2626';
+                html += '<span style="background:' + fbColor + '20;color:' + fbColor + ';font-size:11px;padding:2px 8px;border-radius:12px;font-weight:600">' + fbLabel + '</span>';
+                if (data.feedbackReason) html += '<span style="font-size:10px;color:var(--text-muted)">(' + esc(data.feedbackReason) + ')</span>';
+            }
             html += '</div>';
             html += '<div><b>Чат:</b> ' + esc(data.chat) + '</div>';
             if (data.username) html += '<div><b>Username:</b> <a href="' + esc(data.profile) + '" target="_blank" rel="noopener" onclick="fetch(\'/api/log-profile-click/' + parseInt(data.id) + '\').catch(function(){})">@' + esc(data.username) + '</a></div>';

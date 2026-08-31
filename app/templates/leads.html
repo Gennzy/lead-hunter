@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Лиды — Lead Hunter{% endblock %}
 {% block content %}
+<style>
+.kanban-card-feedback{font-size:10px;padding:1px 5px;border-radius:var(--r-full);font-weight:600;line-height:1}
+.kanban-card-feedback.feedback-useful{background:#16a34a20;color:#16a34a}
+.kanban-card-feedback.feedback-not_useful{background:#dc262620;color:#dc2626}
+.kanban-card-feedback.feedback-not_lead{background:#6b728020;color:#6b7280}
+</style>
 <div class="page-toolbar">
     <h1 style="font-size:20px;font-weight:600;margin:0">Лиды <small style="font-size:14px;font-weight:400;color:var(--text-muted)">{{ total }}</small></h1>
     <div style="display:flex;gap:8px;align-items:center">
@@ -13,7 +19,7 @@
 </div>
 
 <div class="status-tabs">
-    {% set all_statuses = [('','Все', total), ('new','Новые', status_counts.get('new',0)), ('contacted','Контакт', status_counts.get('contacted',0)), ('interested','Заинтересован', status_counts.get('interested',0)), ('deal','Сделки', status_counts.get('deal',0)), ('not_interested','Не интересуют', status_counts.get('not_interested',0)), ('archive','Архив', status_counts.get('archive',0)), ('deleted','Удалённые', status_counts.get('deleted',0))] %}
+    {% set all_statuses = [('','Все', total), ('new','Новые', status_counts.get('new',0)), ('contacted','Контакт', status_counts.get('contacted',0)), ('interested','Заинтересован', status_counts.get('interested',0)), ('deal','Сделки', status_counts.get('deal',0)), ('not_interested','Не интересуют', status_counts.get('not_interested',0)), ('archive','Архив', status_counts.get('archive',0)), ('deleted','Удалённые', status_counts.get('deleted',0)), ('not_lead','🚫 Не лиды', not_lead_count)] %}
     {% for val, label, cnt in all_statuses %}
     <a href="/leads{% if val %}?status={{ val }}{% endif %}" class="tab {% if status_filter == val %}active{% endif %}">
         {{ label }} <span class="tab-count">{{ cnt }}</span>
@@ -56,6 +62,12 @@
             <option value="2" {% if noresp == 2 %}selected{% endif %}>Без ответа 2д+</option>
             <option value="3" {% if noresp == 3 %}selected{% endif %}>Без ответа 3д+</option>
             <option value="7" {% if noresp == 7 %}selected{% endif %}>Без ответа 7д+</option>
+        </select>
+        <select name="feedback" onchange="this.form.submit()" title="Фидбек">
+            <option value="">Фидбек: любой</option>
+            <option value="useful" {% if feedback_f == 'useful' %}selected{% endif %}>✅ Полезный</option>
+            <option value="not_useful" {% if feedback_f == 'not_useful' %}selected{% endif %}>❌ Не полезный</option>
+            <option value="not_lead" {% if feedback_f == 'not_lead' %}selected{% endif %}>🚫 Не лид</option>
         </select>
         <select name="sort" onchange="this.form.submit()">
             <option value="">Сортировка</option>
@@ -130,6 +142,11 @@
                     <a href="/leads/{{ repeat_info[lead.id].other_id }}"
                        class="score-badge" title="Повторный клиент: в системе ещё {{ repeat_info[lead.id].count }} лид(ов) от этого автора"
                        style="background:#7a9ec2;font-size:9px;padding:1px 5px;margin-left:4px;text-decoration:none">🔁 {{ repeat_info[lead.id].count + 1 }}</a>
+                    {% endif %}
+                    {% if lead.feedback %}
+                    <span class="kanban-card-feedback feedback-{{ lead.feedback }}" style="margin-left:4px" title="{{ lead.feedback_reason or ('Полезный' if lead.feedback == 'useful' else 'Не полезный') }}">
+                        {% if lead.feedback == 'useful' %}✅{% elif lead.feedback_reason == 'not_lead' or lead.feedback_reason == 'off_topic' %}🚫{% else %}❌{% endif %}
+                    </span>
                     {% endif %}
                 </td>
                 <td class="msg-preview" style="max-width:150px">{{ lead.chat_title[:30] }}</td>
@@ -276,11 +293,11 @@
 
 <div class="pagination">
     {% if page > 1 %}
-    <a href="?page={{ page-1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">← Назад</a>
+    <a href="?page={{ page-1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}{% if feedback_f %}&feedback={{ feedback_f }}{% endif %}" class="btn btn-secondary btn-sm">← Назад</a>
     {% endif %}
     <span class="page-info">Страница {{ page }} из {{ total_pages }} <span style="color:var(--text-muted);font-size:12px">({{ total }} лидов)</span></span>
     {% if page < total_pages %}
-    <a href="?page={{ page+1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}" class="btn btn-secondary btn-sm">Далее →</a>
+    <a href="?page={{ page+1 }}&status={{ status_filter }}&chat={{ chat_filter }}&search={{ search }}&date_from={{ date_from }}&date_to={{ date_to }}&sort={{ sort }}{% if feedback_f %}&feedback={{ feedback_f }}{% endif %}" class="btn btn-secondary btn-sm">Далее →</a>
     {% endif %}
 </div>
 
