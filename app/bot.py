@@ -1417,6 +1417,7 @@ async def send_anomaly_notification(owner_chat_id: int, message: str):
 async def check_and_notify_anomalies():
     """Check all tenants for anomalies and send notifications to owners."""
     from datetime import datetime, timedelta
+    from sqlalchemy import func
     from app.models import Tenant, ActionLog
 
     async with async_session() as session:
